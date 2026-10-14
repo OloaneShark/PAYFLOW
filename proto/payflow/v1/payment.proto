@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package payflow.v1;
+
+option go_package = "payflow/gen/go/payflow/v1;payflowv1";
+
+import "google/protobuf/timestamp.proto";
+
+// PaymentService creates and retrieves simulated payments.
+service PaymentService {
+  rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse);
+  rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse);
+}
+
+message CreatePaymentRequest {
+  string merchant_id = 1;
+  string idempotency_key = 2;
+  int64 amount = 3;
+  string currency = 4;
+}
+
+message CreatePaymentResponse {
+  Payment payment = 1;
+}
+
+message GetPaymentRequest {
+  string payment_id = 1;
+}
+
+message GetPaymentResponse {
+  Payment payment = 1;
+}
+
+message Payment {
+  string payment_id = 1;
+  string merchant_id = 2;
+  int64 amount = 3;
+  string currency = 4;
+  PaymentStatus status = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+enum PaymentStatus {
+  PAYMENT_STATUS_UNSPECIFIED = 0;
+  PAYMENT_STATUS_CREATED = 1;
+}
