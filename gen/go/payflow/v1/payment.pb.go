@@ -25,8 +25,12 @@ const (
 type PaymentStatus int32
 
 const (
-	PaymentStatus_PAYMENT_STATUS_UNSPECIFIED PaymentStatus = 0
-	PaymentStatus_PAYMENT_STATUS_CREATED     PaymentStatus = 1
+	PaymentStatus_PAYMENT_STATUS_UNSPECIFIED             PaymentStatus = 0
+	PaymentStatus_PAYMENT_STATUS_CREATED                 PaymentStatus = 1
+	PaymentStatus_PAYMENT_STATUS_PROCESSING              PaymentStatus = 2
+	PaymentStatus_PAYMENT_STATUS_COMPLETED               PaymentStatus = 3
+	PaymentStatus_PAYMENT_STATUS_FAILED                  PaymentStatus = 4
+	PaymentStatus_PAYMENT_STATUS_RECONCILIATION_REQUIRED PaymentStatus = 5
 )
 
 // Enum value maps for PaymentStatus.
@@ -34,10 +38,18 @@ var (
 	PaymentStatus_name = map[int32]string{
 		0: "PAYMENT_STATUS_UNSPECIFIED",
 		1: "PAYMENT_STATUS_CREATED",
+		2: "PAYMENT_STATUS_PROCESSING",
+		3: "PAYMENT_STATUS_COMPLETED",
+		4: "PAYMENT_STATUS_FAILED",
+		5: "PAYMENT_STATUS_RECONCILIATION_REQUIRED",
 	}
 	PaymentStatus_value = map[string]int32{
-		"PAYMENT_STATUS_UNSPECIFIED": 0,
-		"PAYMENT_STATUS_CREATED":     1,
+		"PAYMENT_STATUS_UNSPECIFIED":             0,
+		"PAYMENT_STATUS_CREATED":                 1,
+		"PAYMENT_STATUS_PROCESSING":              2,
+		"PAYMENT_STATUS_COMPLETED":               3,
+		"PAYMENT_STATUS_FAILED":                  4,
+		"PAYMENT_STATUS_RECONCILIATION_REQUIRED": 5,
 	}
 )
 
@@ -66,6 +78,64 @@ func (x PaymentStatus) Number() protoreflect.EnumNumber {
 // Deprecated: Use PaymentStatus.Descriptor instead.
 func (PaymentStatus) EnumDescriptor() ([]byte, []int) {
 	return file_payflow_v1_payment_proto_rawDescGZIP(), []int{0}
+}
+
+type SimulationScenario int32
+
+const (
+	SimulationScenario_SIMULATION_SCENARIO_UNSPECIFIED            SimulationScenario = 0
+	SimulationScenario_SIMULATION_SCENARIO_APPROVE                SimulationScenario = 1
+	SimulationScenario_SIMULATION_SCENARIO_DECLINE                SimulationScenario = 2
+	SimulationScenario_SIMULATION_SCENARIO_TEMPORARY_FAILURE      SimulationScenario = 3
+	SimulationScenario_SIMULATION_SCENARIO_NETWORK_TIMEOUT        SimulationScenario = 4
+	SimulationScenario_SIMULATION_SCENARIO_LOST_APPROVAL_RESPONSE SimulationScenario = 5
+)
+
+// Enum value maps for SimulationScenario.
+var (
+	SimulationScenario_name = map[int32]string{
+		0: "SIMULATION_SCENARIO_UNSPECIFIED",
+		1: "SIMULATION_SCENARIO_APPROVE",
+		2: "SIMULATION_SCENARIO_DECLINE",
+		3: "SIMULATION_SCENARIO_TEMPORARY_FAILURE",
+		4: "SIMULATION_SCENARIO_NETWORK_TIMEOUT",
+		5: "SIMULATION_SCENARIO_LOST_APPROVAL_RESPONSE",
+	}
+	SimulationScenario_value = map[string]int32{
+		"SIMULATION_SCENARIO_UNSPECIFIED":            0,
+		"SIMULATION_SCENARIO_APPROVE":                1,
+		"SIMULATION_SCENARIO_DECLINE":                2,
+		"SIMULATION_SCENARIO_TEMPORARY_FAILURE":      3,
+		"SIMULATION_SCENARIO_NETWORK_TIMEOUT":        4,
+		"SIMULATION_SCENARIO_LOST_APPROVAL_RESPONSE": 5,
+	}
+)
+
+func (x SimulationScenario) Enum() *SimulationScenario {
+	p := new(SimulationScenario)
+	*p = x
+	return p
+}
+
+func (x SimulationScenario) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SimulationScenario) Descriptor() protoreflect.EnumDescriptor {
+	return file_payflow_v1_payment_proto_enumTypes[1].Descriptor()
+}
+
+func (SimulationScenario) Type() protoreflect.EnumType {
+	return &file_payflow_v1_payment_proto_enumTypes[1]
+}
+
+func (x SimulationScenario) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SimulationScenario.Descriptor instead.
+func (SimulationScenario) EnumDescriptor() ([]byte, []int) {
+	return file_payflow_v1_payment_proto_rawDescGZIP(), []int{1}
 }
 
 type CreatePaymentRequest struct {
@@ -268,22 +338,211 @@ func (x *GetPaymentResponse) GetPayment() *Payment {
 	return nil
 }
 
-type Payment struct {
+type SimulatePaymentRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PaymentId     string                 `protobuf:"bytes,1,opt,name=payment_id,json=paymentId,proto3" json:"payment_id,omitempty"`
-	MerchantId    string                 `protobuf:"bytes,2,opt,name=merchant_id,json=merchantId,proto3" json:"merchant_id,omitempty"`
-	Amount        int64                  `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
-	Currency      string                 `protobuf:"bytes,4,opt,name=currency,proto3" json:"currency,omitempty"`
-	Status        PaymentStatus          `protobuf:"varint,5,opt,name=status,proto3,enum=payflow.v1.PaymentStatus" json:"status,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	Scenario      SimulationScenario     `protobuf:"varint,2,opt,name=scenario,proto3,enum=payflow.v1.SimulationScenario" json:"scenario,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
+func (x *SimulatePaymentRequest) Reset() {
+	*x = SimulatePaymentRequest{}
+	mi := &file_payflow_v1_payment_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SimulatePaymentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SimulatePaymentRequest) ProtoMessage() {}
+
+func (x *SimulatePaymentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payflow_v1_payment_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SimulatePaymentRequest.ProtoReflect.Descriptor instead.
+func (*SimulatePaymentRequest) Descriptor() ([]byte, []int) {
+	return file_payflow_v1_payment_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SimulatePaymentRequest) GetPaymentId() string {
+	if x != nil {
+		return x.PaymentId
+	}
+	return ""
+}
+
+func (x *SimulatePaymentRequest) GetScenario() SimulationScenario {
+	if x != nil {
+		return x.Scenario
+	}
+	return SimulationScenario_SIMULATION_SCENARIO_UNSPECIFIED
+}
+
+type SimulatePaymentResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Payment       *Payment               `protobuf:"bytes,1,opt,name=payment,proto3" json:"payment,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SimulatePaymentResponse) Reset() {
+	*x = SimulatePaymentResponse{}
+	mi := &file_payflow_v1_payment_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SimulatePaymentResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SimulatePaymentResponse) ProtoMessage() {}
+
+func (x *SimulatePaymentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payflow_v1_payment_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SimulatePaymentResponse.ProtoReflect.Descriptor instead.
+func (*SimulatePaymentResponse) Descriptor() ([]byte, []int) {
+	return file_payflow_v1_payment_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SimulatePaymentResponse) GetPayment() *Payment {
+	if x != nil {
+		return x.Payment
+	}
+	return nil
+}
+
+type ReconcilePaymentRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PaymentId     string                 `protobuf:"bytes,1,opt,name=payment_id,json=paymentId,proto3" json:"payment_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReconcilePaymentRequest) Reset() {
+	*x = ReconcilePaymentRequest{}
+	mi := &file_payflow_v1_payment_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReconcilePaymentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReconcilePaymentRequest) ProtoMessage() {}
+
+func (x *ReconcilePaymentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payflow_v1_payment_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReconcilePaymentRequest.ProtoReflect.Descriptor instead.
+func (*ReconcilePaymentRequest) Descriptor() ([]byte, []int) {
+	return file_payflow_v1_payment_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ReconcilePaymentRequest) GetPaymentId() string {
+	if x != nil {
+		return x.PaymentId
+	}
+	return ""
+}
+
+type ReconcilePaymentResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Payment       *Payment               `protobuf:"bytes,1,opt,name=payment,proto3" json:"payment,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReconcilePaymentResponse) Reset() {
+	*x = ReconcilePaymentResponse{}
+	mi := &file_payflow_v1_payment_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReconcilePaymentResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReconcilePaymentResponse) ProtoMessage() {}
+
+func (x *ReconcilePaymentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payflow_v1_payment_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReconcilePaymentResponse.ProtoReflect.Descriptor instead.
+func (*ReconcilePaymentResponse) Descriptor() ([]byte, []int) {
+	return file_payflow_v1_payment_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ReconcilePaymentResponse) GetPayment() *Payment {
+	if x != nil {
+		return x.Payment
+	}
+	return nil
+}
+
+type Payment struct {
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	PaymentId                string                 `protobuf:"bytes,1,opt,name=payment_id,json=paymentId,proto3" json:"payment_id,omitempty"`
+	MerchantId               string                 `protobuf:"bytes,2,opt,name=merchant_id,json=merchantId,proto3" json:"merchant_id,omitempty"`
+	Amount                   int64                  `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	Currency                 string                 `protobuf:"bytes,4,opt,name=currency,proto3" json:"currency,omitempty"`
+	Status                   PaymentStatus          `protobuf:"varint,5,opt,name=status,proto3,enum=payflow.v1.PaymentStatus" json:"status,omitempty"`
+	CreatedAt                *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt                *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	ProviderOperationId      string                 `protobuf:"bytes,8,opt,name=provider_operation_id,json=providerOperationId,proto3" json:"provider_operation_id,omitempty"`
+	ProcessingStartedAt      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=processing_started_at,json=processingStartedAt,proto3" json:"processing_started_at,omitempty"`
+	CompletedAt              *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
+	FailedAt                 *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=failed_at,json=failedAt,proto3" json:"failed_at,omitempty"`
+	ReconciliationRequiredAt *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=reconciliation_required_at,json=reconciliationRequiredAt,proto3" json:"reconciliation_required_at,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
+}
+
 func (x *Payment) Reset() {
 	*x = Payment{}
-	mi := &file_payflow_v1_payment_proto_msgTypes[4]
+	mi := &file_payflow_v1_payment_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -295,7 +554,7 @@ func (x *Payment) String() string {
 func (*Payment) ProtoMessage() {}
 
 func (x *Payment) ProtoReflect() protoreflect.Message {
-	mi := &file_payflow_v1_payment_proto_msgTypes[4]
+	mi := &file_payflow_v1_payment_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -308,7 +567,7 @@ func (x *Payment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Payment.ProtoReflect.Descriptor instead.
 func (*Payment) Descriptor() ([]byte, []int) {
-	return file_payflow_v1_payment_proto_rawDescGZIP(), []int{4}
+	return file_payflow_v1_payment_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Payment) GetPaymentId() string {
@@ -360,6 +619,41 @@ func (x *Payment) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Payment) GetProviderOperationId() string {
+	if x != nil {
+		return x.ProviderOperationId
+	}
+	return ""
+}
+
+func (x *Payment) GetProcessingStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ProcessingStartedAt
+	}
+	return nil
+}
+
+func (x *Payment) GetCompletedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CompletedAt
+	}
+	return nil
+}
+
+func (x *Payment) GetFailedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.FailedAt
+	}
+	return nil
+}
+
+func (x *Payment) GetReconciliationRequiredAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ReconciliationRequiredAt
+	}
+	return nil
+}
+
 var File_payflow_v1_payment_proto protoreflect.FileDescriptor
 
 const file_payflow_v1_payment_proto_rawDesc = "" +
@@ -378,7 +672,18 @@ const file_payflow_v1_payment_proto_rawDesc = "" +
 	"\n" +
 	"payment_id\x18\x01 \x01(\tR\tpaymentId\"C\n" +
 	"\x12GetPaymentResponse\x12-\n" +
-	"\apayment\x18\x01 \x01(\v2\x13.payflow.v1.PaymentR\apayment\"\xa6\x02\n" +
+	"\apayment\x18\x01 \x01(\v2\x13.payflow.v1.PaymentR\apayment\"s\n" +
+	"\x16SimulatePaymentRequest\x12\x1d\n" +
+	"\n" +
+	"payment_id\x18\x01 \x01(\tR\tpaymentId\x12:\n" +
+	"\bscenario\x18\x02 \x01(\x0e2\x1e.payflow.v1.SimulationScenarioR\bscenario\"H\n" +
+	"\x17SimulatePaymentResponse\x12-\n" +
+	"\apayment\x18\x01 \x01(\v2\x13.payflow.v1.PaymentR\apayment\"8\n" +
+	"\x17ReconcilePaymentRequest\x12\x1d\n" +
+	"\n" +
+	"payment_id\x18\x01 \x01(\tR\tpaymentId\"I\n" +
+	"\x18ReconcilePaymentResponse\x12-\n" +
+	"\apayment\x18\x01 \x01(\v2\x13.payflow.v1.PaymentR\apayment\"\xfc\x04\n" +
 	"\aPayment\x12\x1d\n" +
 	"\n" +
 	"payment_id\x18\x01 \x01(\tR\tpaymentId\x12\x1f\n" +
@@ -390,14 +695,33 @@ const file_payflow_v1_payment_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt*K\n" +
+	"updated_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x122\n" +
+	"\x15provider_operation_id\x18\b \x01(\tR\x13providerOperationId\x12N\n" +
+	"\x15processing_started_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\x13processingStartedAt\x12=\n" +
+	"\fcompleted_at\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\x127\n" +
+	"\tfailed_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\bfailedAt\x12X\n" +
+	"\x1areconciliation_required_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\x18reconciliationRequiredAt*\xcf\x01\n" +
 	"\rPaymentStatus\x12\x1e\n" +
 	"\x1aPAYMENT_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n" +
-	"\x16PAYMENT_STATUS_CREATED\x10\x012\xb3\x01\n" +
+	"\x16PAYMENT_STATUS_CREATED\x10\x01\x12\x1d\n" +
+	"\x19PAYMENT_STATUS_PROCESSING\x10\x02\x12\x1c\n" +
+	"\x18PAYMENT_STATUS_COMPLETED\x10\x03\x12\x19\n" +
+	"\x15PAYMENT_STATUS_FAILED\x10\x04\x12*\n" +
+	"&PAYMENT_STATUS_RECONCILIATION_REQUIRED\x10\x05*\xff\x01\n" +
+	"\x12SimulationScenario\x12#\n" +
+	"\x1fSIMULATION_SCENARIO_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bSIMULATION_SCENARIO_APPROVE\x10\x01\x12\x1f\n" +
+	"\x1bSIMULATION_SCENARIO_DECLINE\x10\x02\x12)\n" +
+	"%SIMULATION_SCENARIO_TEMPORARY_FAILURE\x10\x03\x12'\n" +
+	"#SIMULATION_SCENARIO_NETWORK_TIMEOUT\x10\x04\x12.\n" +
+	"*SIMULATION_SCENARIO_LOST_APPROVAL_RESPONSE\x10\x052\xee\x02\n" +
 	"\x0ePaymentService\x12T\n" +
 	"\rCreatePayment\x12 .payflow.v1.CreatePaymentRequest\x1a!.payflow.v1.CreatePaymentResponse\x12K\n" +
 	"\n" +
-	"GetPayment\x12\x1d.payflow.v1.GetPaymentRequest\x1a\x1e.payflow.v1.GetPaymentResponseB%Z#payflow/gen/go/payflow/v1;payflowv1b\x06proto3"
+	"GetPayment\x12\x1d.payflow.v1.GetPaymentRequest\x1a\x1e.payflow.v1.GetPaymentResponse\x12Z\n" +
+	"\x0fSimulatePayment\x12\".payflow.v1.SimulatePaymentRequest\x1a#.payflow.v1.SimulatePaymentResponse\x12]\n" +
+	"\x10ReconcilePayment\x12#.payflow.v1.ReconcilePaymentRequest\x1a$.payflow.v1.ReconcilePaymentResponseB%Z#payflow/gen/go/payflow/v1;payflowv1b\x06proto3"
 
 var (
 	file_payflow_v1_payment_proto_rawDescOnce sync.Once
@@ -411,32 +735,48 @@ func file_payflow_v1_payment_proto_rawDescGZIP() []byte {
 	return file_payflow_v1_payment_proto_rawDescData
 }
 
-var file_payflow_v1_payment_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_payflow_v1_payment_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_payflow_v1_payment_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_payflow_v1_payment_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_payflow_v1_payment_proto_goTypes = []any{
-	(PaymentStatus)(0),            // 0: payflow.v1.PaymentStatus
-	(*CreatePaymentRequest)(nil),  // 1: payflow.v1.CreatePaymentRequest
-	(*CreatePaymentResponse)(nil), // 2: payflow.v1.CreatePaymentResponse
-	(*GetPaymentRequest)(nil),     // 3: payflow.v1.GetPaymentRequest
-	(*GetPaymentResponse)(nil),    // 4: payflow.v1.GetPaymentResponse
-	(*Payment)(nil),               // 5: payflow.v1.Payment
-	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
+	(PaymentStatus)(0),               // 0: payflow.v1.PaymentStatus
+	(SimulationScenario)(0),          // 1: payflow.v1.SimulationScenario
+	(*CreatePaymentRequest)(nil),     // 2: payflow.v1.CreatePaymentRequest
+	(*CreatePaymentResponse)(nil),    // 3: payflow.v1.CreatePaymentResponse
+	(*GetPaymentRequest)(nil),        // 4: payflow.v1.GetPaymentRequest
+	(*GetPaymentResponse)(nil),       // 5: payflow.v1.GetPaymentResponse
+	(*SimulatePaymentRequest)(nil),   // 6: payflow.v1.SimulatePaymentRequest
+	(*SimulatePaymentResponse)(nil),  // 7: payflow.v1.SimulatePaymentResponse
+	(*ReconcilePaymentRequest)(nil),  // 8: payflow.v1.ReconcilePaymentRequest
+	(*ReconcilePaymentResponse)(nil), // 9: payflow.v1.ReconcilePaymentResponse
+	(*Payment)(nil),                  // 10: payflow.v1.Payment
+	(*timestamppb.Timestamp)(nil),    // 11: google.protobuf.Timestamp
 }
 var file_payflow_v1_payment_proto_depIdxs = []int32{
-	5, // 0: payflow.v1.CreatePaymentResponse.payment:type_name -> payflow.v1.Payment
-	5, // 1: payflow.v1.GetPaymentResponse.payment:type_name -> payflow.v1.Payment
-	0, // 2: payflow.v1.Payment.status:type_name -> payflow.v1.PaymentStatus
-	6, // 3: payflow.v1.Payment.created_at:type_name -> google.protobuf.Timestamp
-	6, // 4: payflow.v1.Payment.updated_at:type_name -> google.protobuf.Timestamp
-	1, // 5: payflow.v1.PaymentService.CreatePayment:input_type -> payflow.v1.CreatePaymentRequest
-	3, // 6: payflow.v1.PaymentService.GetPayment:input_type -> payflow.v1.GetPaymentRequest
-	2, // 7: payflow.v1.PaymentService.CreatePayment:output_type -> payflow.v1.CreatePaymentResponse
-	4, // 8: payflow.v1.PaymentService.GetPayment:output_type -> payflow.v1.GetPaymentResponse
-	7, // [7:9] is the sub-list for method output_type
-	5, // [5:7] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	10, // 0: payflow.v1.CreatePaymentResponse.payment:type_name -> payflow.v1.Payment
+	10, // 1: payflow.v1.GetPaymentResponse.payment:type_name -> payflow.v1.Payment
+	1,  // 2: payflow.v1.SimulatePaymentRequest.scenario:type_name -> payflow.v1.SimulationScenario
+	10, // 3: payflow.v1.SimulatePaymentResponse.payment:type_name -> payflow.v1.Payment
+	10, // 4: payflow.v1.ReconcilePaymentResponse.payment:type_name -> payflow.v1.Payment
+	0,  // 5: payflow.v1.Payment.status:type_name -> payflow.v1.PaymentStatus
+	11, // 6: payflow.v1.Payment.created_at:type_name -> google.protobuf.Timestamp
+	11, // 7: payflow.v1.Payment.updated_at:type_name -> google.protobuf.Timestamp
+	11, // 8: payflow.v1.Payment.processing_started_at:type_name -> google.protobuf.Timestamp
+	11, // 9: payflow.v1.Payment.completed_at:type_name -> google.protobuf.Timestamp
+	11, // 10: payflow.v1.Payment.failed_at:type_name -> google.protobuf.Timestamp
+	11, // 11: payflow.v1.Payment.reconciliation_required_at:type_name -> google.protobuf.Timestamp
+	2,  // 12: payflow.v1.PaymentService.CreatePayment:input_type -> payflow.v1.CreatePaymentRequest
+	4,  // 13: payflow.v1.PaymentService.GetPayment:input_type -> payflow.v1.GetPaymentRequest
+	6,  // 14: payflow.v1.PaymentService.SimulatePayment:input_type -> payflow.v1.SimulatePaymentRequest
+	8,  // 15: payflow.v1.PaymentService.ReconcilePayment:input_type -> payflow.v1.ReconcilePaymentRequest
+	3,  // 16: payflow.v1.PaymentService.CreatePayment:output_type -> payflow.v1.CreatePaymentResponse
+	5,  // 17: payflow.v1.PaymentService.GetPayment:output_type -> payflow.v1.GetPaymentResponse
+	7,  // 18: payflow.v1.PaymentService.SimulatePayment:output_type -> payflow.v1.SimulatePaymentResponse
+	9,  // 19: payflow.v1.PaymentService.ReconcilePayment:output_type -> payflow.v1.ReconcilePaymentResponse
+	16, // [16:20] is the sub-list for method output_type
+	12, // [12:16] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_payflow_v1_payment_proto_init() }
@@ -449,8 +789,8 @@ func file_payflow_v1_payment_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_payflow_v1_payment_proto_rawDesc), len(file_payflow_v1_payment_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   5,
+			NumEnums:      2,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

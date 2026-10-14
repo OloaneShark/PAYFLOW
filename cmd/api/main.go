@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/jackc/pgx/v5/pgxpool"
 	paymentv1connect "payflow/gen/go/payflow/v1/payflowv1connect"
+	"payflow/internal/banking"
 	"payflow/internal/payment"
 	"payflow/internal/storage"
 )
@@ -27,6 +29,13 @@ func main() {
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
+	devProcessing := os.Getenv("PAYFLOW_ENABLE_DEV_PROCESSING") == "true"
+	if devProcessing {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil || !(host == "localhost" || net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()) {
+			log.Fatal("development processing requires a loopback LISTEN_ADDR")
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	pool, err := pgxpool.New(ctx, url)
@@ -37,9 +46,11 @@ func main() {
 	if err := pool.Ping(ctx); err != nil {
 		log.Fatal(err)
 	}
-	service := payment.NewService(&storage.Postgres{Pool: pool})
+	store := &storage.Postgres{Pool: pool}
+	service := payment.NewService(store)
+	processor := payment.NewProcessor(store, &banking.Postgres{Pool: pool})
 	server := connect.NewServer()
-	paymentv1connect.RegisterPaymentServiceHandler(server, &payment.Handler{Service: service})
+	paymentv1connect.RegisterPaymentServiceHandler(server, &payment.Handler{Service: service, Processor: processor, DevProcessingEnabled: devProcessing})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })

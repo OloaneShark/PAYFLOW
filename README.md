@@ -1,13 +1,16 @@
 # PAYFLOW
 
-PAYFLOW is a simulated payment creation API written in Go. It stores JPY-denominated payment requests in PostgreSQL and exposes `CreatePayment` and `GetPayment` through ConnectRPC. It does not move money or contact banks.
+PAYFLOW is a simulated payment backend written in Go. It stores JPY-denominated payment requests in PostgreSQL, then exercises a durable mock banking provider through ConnectRPC. It does not move money or contact banks.
 
-## Phase 1 behavior
+## Payment lifecycle
 
 - `CreatePayment` accepts a nonempty merchant ID and idempotency key, a positive integer amount in JPY, and the literal currency `JPY`. Amounts are whole yen (`int64`), never floating point.
-- A payment starts and remains `CREATED` in this phase. Repeating the same merchant/key and amount/currency returns the original payment. Reusing the key with a changed valid payload, such as a different amount, returns `ALREADY_EXISTS`. Unsupported currencies are rejected as `INVALID_ARGUMENT` before idempotency lookup.
+- A payment starts `CREATED`. Local simulation claims it as `PROCESSING`, then records `COMPLETED` only after a confirmed mock approval or `FAILED` only after a confirmed mock decline. An uncertain result becomes `RECONCILIATION_REQUIRED`; a timeout never means failure.
+- `RECONCILIATION_REQUIRED` can be claimed for reconciliation and return to `PROCESSING`. Reconciliation queries the durable provider record, then retries only with the same operation ID when the result is still unknown.
+- Repeating the same merchant/key and amount/currency returns the original payment, including its current status. Reusing the key with a changed valid payload, such as a different amount, returns `ALREADY_EXISTS`. Unsupported currencies are rejected as `INVALID_ARGUMENT` before idempotency lookup.
 - `GetPayment` looks up a payment by UUID. Missing IDs return `NOT_FOUND`; malformed IDs return `INVALID_ARGUMENT`.
-- Requests are simulated records only. There is no authorization, settlement, refund, ledger, or external provider.
+- `SimulatePayment` and `ReconcilePayment` are **development-only** operations. They are disabled by default. Enabling them requires a loopback listening address. Do not expose this API on a public interface.
+- All operations are simulated records only. There is no authorization, settlement, refund, ledger, or external provider.
 
 ## Requirements and selected versions
 
@@ -27,6 +30,8 @@ go run ./cmd/api
 
 The API listens on `127.0.0.1:8080` by default. `.env` is an example for your shell or tooling; the Go programs read environment variables directly. To choose another address, set `$env:LISTEN_ADDR`.
 
+To enable local simulation, set `$env:PAYFLOW_ENABLE_DEV_PROCESSING = 'true'` before `go run ./cmd/api`. The server refuses this setting when `LISTEN_ADDR` is not loopback. Run `go run ./cmd/migrate` after pulling Phase 2 changes; migration 002 preserves Phase 1 payments and idempotency keys.
+
 In a second PowerShell window, create and fetch a sample payment:
 
 ```powershell
@@ -38,6 +43,42 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:8080/payflow.v1.PaymentService/GetPayme
 
 Protobuf JSON represents `int64` values as strings, so `"amount":"1200"` is intentional.
 
+### Reproduce simulated outcomes
+
+With local simulation enabled, use a new idempotency key for each example:
+
+```powershell
+$base = 'http://127.0.0.1:8080/payflow.v1.PaymentService'
+function New-DemoPayment($key) {
+  $body = @{merchantId='demo-merchant'; idempotencyKey=$key; amount='1200'; currency='JPY'} | ConvertTo-Json -Compress
+  (Invoke-RestMethod -Uri "$base/CreatePayment" -Method Post -ContentType 'application/json' -Body $body).payment.paymentId
+}
+function Invoke-DemoScenario($id, $scenario) {
+  $body = @{paymentId=$id; scenario=$scenario} | ConvertTo-Json -Compress
+  Invoke-RestMethod -Uri "$base/SimulatePayment" -Method Post -ContentType 'application/json' -Body $body
+}
+function Invoke-DemoReconcile($id) {
+  $body = @{paymentId=$id} | ConvertTo-Json -Compress
+  Invoke-RestMethod -Uri "$base/ReconcilePayment" -Method Post -ContentType 'application/json' -Body $body
+}
+
+$approved = New-DemoPayment 'approved-1'
+Invoke-DemoScenario $approved 'SIMULATION_SCENARIO_APPROVE'             # COMPLETED
+$declined = New-DemoPayment 'declined-1'
+Invoke-DemoScenario $declined 'SIMULATION_SCENARIO_DECLINE'             # FAILED
+$uncertain = New-DemoPayment 'timeout-1'
+Invoke-DemoScenario $uncertain 'SIMULATION_SCENARIO_NETWORK_TIMEOUT'    # RECONCILIATION_REQUIRED
+Invoke-DemoReconcile $uncertain                                        # still uncertain
+$lost = New-DemoPayment 'lost-response-1'
+Invoke-DemoScenario $lost 'SIMULATION_SCENARIO_LOST_APPROVAL_RESPONSE'  # uncertain
+Invoke-DemoReconcile $lost                                             # COMPLETED
+$temporary = New-DemoPayment 'temporary-1'
+Invoke-DemoScenario $temporary 'SIMULATION_SCENARIO_TEMPORARY_FAILURE'  # uncertain
+Invoke-DemoReconcile $temporary                                        # COMPLETED
+```
+
+Restart the API between simulation and reconciliation to exercise durable recovery. A duplicate `SimulatePayment` call returns the existing payment and does not issue another provider operation. A scenario change on the same payment returns `ALREADY_EXISTS`.
+
 ## Build, generate, and test
 
 ```powershell
@@ -47,6 +88,7 @@ go test ./...
 go vet ./...
 gofmt -l (rg --files -g '*.go')
 buf lint
+buf generate
 ```
 
 `go test ./...` runs unit tests and skips PostgreSQL integration tests when `TEST_DATABASE_URL` is unset. Use a disposable test database for integration tests:
@@ -77,12 +119,13 @@ The checked-in `buf.gen.yaml` uses local plugins to avoid depending on a hosted 
 | --- | --- |
 | `cmd/api` | ConnectRPC HTTP server |
 | `cmd/migrate` | Embedded SQL migration runner |
-| `internal/payment` | Validation, fingerprinting, service, RPC adapter |
+| `internal/payment` | Validation, lifecycle, processing service, RPC adapter |
+| `internal/banking` | Durable local mock provider and scenarios |
 | `internal/storage` | PostgreSQL persistence through pgx |
 | `proto/payflow/v1` | Protobuf API contract |
 | `gen/go` | Generated Protobuf and Connect code |
 | `db/migrations` | Versioned SQL and migration runner |
-| `tests` | PostgreSQL integration tests |
+| `tests` | PostgreSQL integration and recovery tests |
 
 See [architecture](docs/architecture.md) for concurrency and extension notes.
 

@@ -9,24 +9,56 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"payflow/internal/banking"
 )
 
 var (
-	ErrInvalidArgument = errors.New("invalid argument")
-	ErrConflict        = errors.New("idempotency key is already used for a different request")
-	ErrNotFound        = errors.New("payment not found")
+	ErrInvalidArgument   = errors.New("invalid argument")
+	ErrConflict          = errors.New("idempotency key is already used for a different request")
+	ErrNotFound          = errors.New("payment not found")
+	ErrInvalidTransition = errors.New("invalid payment status transition")
+	ErrScenarioConflict  = errors.New("payment already uses a different simulation scenario")
 )
 
 type Payment struct {
-	ID                 string
-	MerchantID         string
-	IdempotencyKey     string
-	RequestFingerprint []byte
-	Amount             int64
-	Currency           string
-	Status             string
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID                       string
+	MerchantID               string
+	IdempotencyKey           string
+	RequestFingerprint       []byte
+	Amount                   int64
+	Currency                 string
+	Status                   string
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	ProviderOperationID      string
+	ProcessingScenario       banking.Scenario
+	ProcessingStartedAt      *time.Time
+	CompletedAt              *time.Time
+	FailedAt                 *time.Time
+	ReconciliationRequiredAt *time.Time
+	ProcessingLeaseUntil     *time.Time
+}
+
+const (
+	StatusCreated                = "CREATED"
+	StatusProcessing             = "PROCESSING"
+	StatusCompleted              = "COMPLETED"
+	StatusFailed                 = "FAILED"
+	StatusReconciliationRequired = "RECONCILIATION_REQUIRED"
+)
+
+func ValidTransition(from, to string) bool {
+	switch from {
+	case StatusCreated:
+		return to == StatusProcessing
+	case StatusProcessing:
+		return to == StatusCompleted || to == StatusFailed || to == StatusReconciliationRequired
+	case StatusReconciliationRequired:
+		return to == StatusProcessing
+	default:
+		return false
+	}
 }
 
 type CreateInput struct {

@@ -1,24 +1,38 @@
-# Phase 1 architecture
+# PAYFLOW architecture
 
-The API server mounts generated ConnectRPC v2 handlers on `net/http`. The handler translates Protobuf requests to the payment service and maps domain errors to explicit Connect codes. The service validates fields, generates a random UUIDv4, and hashes the amount and currency into a SHA-256 request fingerprint. The PostgreSQL adapter uses pgxpool, context-aware operations, and parameterized SQL.
+## Request path and lifecycle
 
-`payments` has a primary key on `id` and a unique constraint on `(merchant_id, idempotency_key)`. Creation runs `INSERT ... ON CONFLICT DO NOTHING RETURNING ...`. If another request won the key, the adapter issues a separate `SELECT` and compares the stored fingerprint and payload. The unique index serializes competing inserts; the second statement gets a fresh PostgreSQL `READ COMMITTED` snapshot after a competing transaction commits. Thus concurrent identical requests converge on one row, while a changed payload receives a conflict. The service generates an unused UUID before the insert; losing contenders simply discard theirs.
+The Go API mounts generated ConnectRPC v2 handlers on `net/http`. `CreatePayment` validates JPY integer amounts and uses the Phase 1 unique `(merchant_id, idempotency_key)` constraint. An identical request returns the same row even after processing; a changed valid payload conflicts. `GetPayment` returns the stored status and timestamps.
 
-The fingerprint covers amount and currency, which are all mutable request payload fields in Phase 1. Merchant ID and idempotency key form the lookup scope. Exact string equality is used for merchant IDs and keys; no whitespace normalization is performed beyond rejecting all-whitespace values. The database stores the fingerprint and original payload for defense against accidental mismatches. A future API field added to creation must also be included in the fingerprint before release.
+The development-only `SimulatePayment` handler calls the processing service. It atomically changes `CREATED` to `PROCESSING`, assigning one stable `provider_operation_id`, a scenario, a claim token, and a 30-second lease. Another request sees the existing payment and does not call the provider. The service makes the mock provider call after the claim statement commits; it holds no payment transaction open during the call. A confirmed approval permits `PROCESSING → COMPLETED`; a confirmed decline permits `PROCESSING → FAILED`. Any unknown result permits `PROCESSING → RECONCILIATION_REQUIRED`.
 
-Amount is an integer count of whole yen. Only `JPY` is accepted. The database enforces positive amounts and stores `BIGINT`, so no floating-point money enters the system. The schema currently permits only `CREATED`, deliberately preventing unsupported state transitions. A later processing phase can add status values in a new migration when it has simulated outcomes to record.
+`ReconcilePayment` claims a `RECONCILIATION_REQUIRED` payment, or a `PROCESSING` payment whose lease has expired after an interrupted worker. It first looks up the provider operation by its original ID. A recorded decision is applied without another provider execution. If the result is pending or absent, it may retry with that same ID. A new operation ID is never allocated during reconciliation. A still-unknown result returns to `RECONCILIATION_REQUIRED`.
 
-The migration runner embeds numbered `.up.sql` files, records applied versions in `schema_migrations`, and takes a PostgreSQL advisory lock so two runners cannot apply a migration at once. Each version runs in one transaction. Matching `.down.sql` files document reversals; this runner only applies forward migrations to avoid accidental data loss.
+Legal status changes are `CREATED → PROCESSING`, `PROCESSING → COMPLETED|FAILED|RECONCILIATION_REQUIRED`, and `RECONCILIATION_REQUIRED → PROCESSING`. Terminal states cannot transition. Go checks requested changes, conditional SQL enforces claim ownership, and a PostgreSQL trigger rejects invalid status changes or changed operation IDs even from another database client. The trigger also requires a matching persisted provider approval or decline before accepting a terminal status. If the final payment update fails, the lease expires and reconciliation retrieves the provider decision.
 
-Tests cover validation in memory and API behavior against a separate PostgreSQL test database through Connect's in-process transport. An HTTP test also exercises the mounted Connect route and Protobuf JSON encoding. The concurrency test starts 24 calls together against the same merchant/key and checks that all return one payment ID.
+## Durable mock provider
 
-## Assumptions and limits
+`internal/banking` is a separate Go package behind a provider interface. Its PostgreSQL table `simulated_provider_operations` has one row per stable operation ID and one per payment. An approved row has one `logical_charge_id` equal to the operation ID. Uniqueness constraints and provider upserts ensure duplicate or concurrent attempts never create a second logical charge. This is only a simulation; the charge ID is a test artifact, not money movement.
 
-- Merchant identity is supplied by the caller. Authentication, authorization, and merchant tenancy enforcement are outside Phase 1.
-- The API has no processing worker and never marks a payment `COMPLETED` or `FAILED`.
-- Local Compose credentials are development-only. Deployment security and operational hardening are future work.
-- Idempotency persists as long as the payment row exists. No expiration or deletion path exists in Phase 1.
+| Scenario | First execution | Reconciliation |
+| --- | --- | --- |
+| `APPROVE` | Persists approval; payment completes | Reads approval |
+| `DECLINE` | Persists decline; payment fails | Reads decline |
+| `TEMPORARY_FAILURE` | Persists pending, reports temporary error; payment becomes uncertain | Retries same ID, persists approval, completes |
+| `NETWORK_TIMEOUT` | Persists pending, reports timeout; payment becomes uncertain | Remains pending and uncertain |
+| `LOST_APPROVAL_RESPONSE` | Persists approval but reports lost response; payment becomes uncertain | Reads approval and completes |
 
-## Future phases
+The provider table and payment table share the local PostgreSQL dependency but use separate statements. This intentionally models a provider decision that can outlive failure to update the payment record. All scenario decisions and attempt counts survive process restart.
 
-The service/store boundary leaves room for a Temporal workflow to coordinate simulated processing. A separate internal double-entry ledger can record balanced entries after a simulated outcome. A mock banking service can return deterministic approvals and declines. These are design directions only; none are implemented here.
+## Migrations and compatibility
+
+Migration 001 is unchanged. Forward migration 002 expands the payment status constraint, adds operation IDs, leases and lifecycle timestamps, installs transition enforcement, and creates the provider operation table. Existing rows remain `CREATED` with null processing metadata. The embedded migration runner records applied versions in `schema_migrations`, takes an advisory lock, and runs each version in a transaction. `.down.sql` files document reversal, but the runner applies only forward migrations to avoid accidental data loss.
+
+The Protobuf contract keeps Phase 1 methods and field numbers. It adds lifecycle values and development-only simulation/reconciliation methods. The handler maps the actual stored status to Protobuf. The simulation methods are disabled by default and may be enabled only while the API binds to loopback; there is no authentication or authorization layer.
+
+## Limits and future work
+
+- Only JPY whole-yen amounts are accepted. There is no money movement, external banking connection, settlement, refund, or ledger.
+- The mock timeout scenario deliberately remains unresolved. No terminal state is guessed from a timeout. An operator or a future workflow could continue reconciliation.
+- Recovery of an interrupted `PROCESSING` payment waits for its 30-second claim lease. There is no background reconciliation worker in Phase 2; the local reconciliation RPC must be called.
+- A later phase can add a Temporal workflow, an internal double-entry ledger, and a separate mock banking service. None is implemented here.
