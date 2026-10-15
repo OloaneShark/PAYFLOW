@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -12,10 +13,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"payflow/internal/banking"
 	"payflow/internal/ledger"
+	"payflow/internal/observability"
 	"payflow/internal/payment"
 )
 
-type Postgres struct{ Pool *pgxpool.Pool }
+type Postgres struct {
+	Pool    *pgxpool.Pool
+	Metrics *observability.Registry
+}
+
+func (s *Postgres) databaseError() {
+	if s.Metrics != nil {
+		s.Metrics.Inc("payflow_database_errors_total")
+	}
+}
 
 const paymentColumns = `id, merchant_id, idempotency_key, request_fingerprint, amount, currency, status,
     created_at, updated_at, COALESCE(provider_operation_id::text, ''), COALESCE(processing_scenario, ''),
@@ -34,12 +45,14 @@ func (s *Postgres) CreateOrGet(ctx context.Context, candidate payment.Payment) (
 		return p, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
+		s.databaseError()
 		return payment.Payment{}, fmt.Errorf("insert payment: %w", err)
 	}
 	// A second statement gets a fresh READ COMMITTED snapshot. PostgreSQL's
 	// unique index makes the INSERT wait for a concurrent writer to commit.
 	const selectExisting = `SELECT ` + paymentColumns + ` FROM payments WHERE merchant_id = $1 AND idempotency_key = $2`
 	if err := scanPayment(s.Pool.QueryRow(ctx, selectExisting, candidate.MerchantID, candidate.IdempotencyKey), &p); err != nil {
+		s.databaseError()
 		return payment.Payment{}, fmt.Errorf("find idempotent payment: %w", err)
 	}
 	if !bytes.Equal(p.RequestFingerprint, candidate.RequestFingerprint) || p.Amount != candidate.Amount || p.Currency != candidate.Currency {
@@ -55,6 +68,7 @@ func (s *Postgres) Get(ctx context.Context, id string) (payment.Payment, error) 
 		if errors.Is(err, pgx.ErrNoRows) {
 			return payment.Payment{}, payment.ErrNotFound
 		}
+		s.databaseError()
 		return payment.Payment{}, fmt.Errorf("get payment: %w", err)
 	}
 	return p, nil
@@ -96,6 +110,7 @@ func (s *Postgres) Claim(ctx context.Context, id string, scenario banking.Scenar
 		return p, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
+		s.databaseError()
 		return payment.Payment{}, false, fmt.Errorf("claim payment: %w", err)
 	}
 	p, err = s.Get(ctx, id)
@@ -120,6 +135,7 @@ func (s *Postgres) ClaimReconciliation(ctx context.Context, id, token string, le
 		return p, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
+		s.databaseError()
 		return payment.Payment{}, false, fmt.Errorf("claim reconciliation: %w", err)
 	}
 	p, err = s.Get(ctx, id)
@@ -152,6 +168,7 @@ func (s *Postgres) Finish(ctx context.Context, id, token, target, reason string)
 		return payment.Payment{}, payment.ErrInvalidTransition
 	}
 	if err != nil {
+		s.databaseError()
 		return payment.Payment{}, fmt.Errorf("finish payment: %w", err)
 	}
 	return p, nil
@@ -160,6 +177,7 @@ func (s *Postgres) Finish(ctx context.Context, id, token, target, reason string)
 func (s *Postgres) finishCompleted(ctx context.Context, id, token string) (payment.Payment, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
+		s.databaseError()
 		return payment.Payment{}, fmt.Errorf("begin payment completion: %w", err)
 	}
 	defer tx.Rollback(ctx)
@@ -170,12 +188,16 @@ func (s *Postgres) finishCompleted(ctx context.Context, id, token string) (payme
 		return payment.Payment{}, payment.ErrNotFound
 	}
 	if err != nil {
+		s.databaseError()
 		return payment.Payment{}, fmt.Errorf("lock payment completion: %w", err)
 	}
 	if status != payment.StatusProcessing || claimToken != token {
 		return payment.Payment{}, payment.ErrInvalidTransition
 	}
 	if _, err := ledger.PostApprovalTx(ctx, tx, id); err != nil {
+		if s.Metrics != nil {
+			s.Metrics.Inc("payflow_ledger_posting_failures_total")
+		}
 		return payment.Payment{}, fmt.Errorf("post approval journal: %w", err)
 	}
 	query := `UPDATE payments SET status='COMPLETED', processing_token=NULL,
@@ -187,10 +209,16 @@ func (s *Postgres) finishCompleted(ctx context.Context, id, token string) (payme
 		if errors.Is(err, pgx.ErrNoRows) {
 			return payment.Payment{}, payment.ErrInvalidTransition
 		}
+		s.databaseError()
 		return payment.Payment{}, fmt.Errorf("finish approved payment: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
+		s.databaseError()
+		if s.Metrics != nil {
+			s.Metrics.Inc("payflow_ledger_posting_failures_total")
+		}
 		return payment.Payment{}, fmt.Errorf("commit payment completion and journal: %w", err)
 	}
+	slog.InfoContext(ctx, "approval journal committed", "payment_id", id, "merchant_id", result.MerchantID, "provider_operation_id", result.ProviderOperationID)
 	return result, nil
 }

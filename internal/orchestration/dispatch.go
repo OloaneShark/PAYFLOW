@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 	"payflow/internal/banking"
+	"payflow/internal/observability"
 	"payflow/internal/payment"
 	"payflow/internal/storage"
 )
@@ -31,6 +33,7 @@ type Starter interface {
 type Coordinator struct {
 	Store   DispatchStore
 	Starter Starter
+	Metrics *observability.Registry
 }
 
 // Request commits the dispatch row before contacting Temporal. A failed start
@@ -77,9 +80,14 @@ func (c *Coordinator) DispatchPending(ctx context.Context) (int, error) {
 
 func (c *Coordinator) dispatchOne(ctx context.Context, req storage.DispatchRequest) error {
 	if err := c.Starter.Start(ctx, req); err != nil {
+		if c.Metrics != nil {
+			c.Metrics.Inc("payflow_workflow_dispatch_failures_total")
+		}
+		slog.WarnContext(ctx, "workflow dispatch failed", "payment_id", req.PaymentID, "workflow_id", req.WorkflowID, "error_category", "temporal_dispatch")
 		_ = c.Store.RecordDispatchError(ctx, req.PaymentID, err)
 		return fmt.Errorf("%w: %v", ErrTemporalUnavailable, err)
 	}
+	slog.DebugContext(ctx, "workflow dispatch confirmed", "payment_id", req.PaymentID, "workflow_id", req.WorkflowID)
 	return c.Store.MarkDispatched(ctx, req.PaymentID)
 }
 

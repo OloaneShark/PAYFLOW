@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"payflow/internal/auth"
 	"payflow/internal/banking"
 	"payflow/internal/ledger"
 	"payflow/internal/operator"
@@ -113,6 +114,36 @@ func TestPhase3UpgradeBackfillsExactlyOnce(t *testing.T) {
 	})
 	if err != nil || repeated.ID != approved.ID || repeated.Status != payment.StatusCompleted {
 		t.Fatalf("historical idempotency = %+v,%v", repeated, err)
+	}
+}
+
+func TestPhase4UpgradeToMerchantCredentialsPreservesPaymentAndJournal(t *testing.T) {
+	pool := phase3Schema(t)
+	applyMigrationFile(t, pool, "004_double_entry_ledger.up.sql")
+	ctx := context.Background()
+	store := &storage.Postgres{Pool: pool}
+	created, err := payment.NewService(store).Create(ctx, payment.CreateInput{MerchantID: "upgrade-merchant", IdempotencyKey: "original", Amount: 400, Currency: "JPY"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := payment.NewProcessor(store, &banking.Postgres{Pool: pool}).Process(ctx, created.ID, banking.Approve); err != nil || p.Status != payment.StatusCompleted {
+		t.Fatalf("complete before migration: %+v %v", p, err)
+	}
+	applyMigrationFile(t, pool, "005_merchant_credentials.up.sql")
+	if journalCount(t, pool, created.ID) != 1 {
+		t.Fatal("migration lost journal")
+	}
+	repeated, err := payment.NewService(store).Create(ctx, payment.CreateInput{MerchantID: created.MerchantID, IdempotencyKey: created.IdempotencyKey, Amount: created.Amount, Currency: created.Currency})
+	if err != nil || repeated.ID != created.ID || repeated.Status != payment.StatusCompleted {
+		t.Fatalf("migration changed idempotency: %+v %v", repeated, err)
+	}
+	keys := &auth.Store{Pool: pool}
+	_, key, err := keys.Issue(ctx, created.MerchantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merchant, err := keys.Authenticate(ctx, key); err != nil || merchant != created.MerchantID {
+		t.Fatalf("upgraded auth: %q %v", merchant, err)
 	}
 }
 

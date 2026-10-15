@@ -1,0 +1,25 @@
+groups:
+  - name: payflow-local
+    rules:
+      - alert: PayflowReconciliationBacklog
+        expr: payflow_reconciliation_backlog > 20
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "PAYFLOW reconciliation backlog is growing"}
+      - alert: PayflowWorkflowDispatchFailures
+        expr: increase(payflow_workflow_dispatch_failures_total[10m]) > 5
+        labels: {severity: warning}
+        annotations: {summary: "PAYFLOW workflow dispatch repeatedly failed"}
+      - alert: PayflowStuckClaims
+        expr: payflow_stuck_processing_claims > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "PAYFLOW has expired processing leases"}
+      - alert: PayflowLedgerIntegrity
+        expr: payflow_ledger_integrity_violations > 0
+        labels: {severity: critical}
+        annotations: {summary: "PAYFLOW ledger integrity check found inconsistent completed payments"}
+      - alert: PayflowDatabaseErrors
+        expr: increase(payflow_database_errors_total[5m]) > 10
+        labels: {severity: warning}
+        annotations: {summary: "PAYFLOW database operations are failing"}

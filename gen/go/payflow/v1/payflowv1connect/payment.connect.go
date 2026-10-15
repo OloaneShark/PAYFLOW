@@ -35,6 +35,9 @@ const (
 	// PaymentServiceReconcilePaymentProcedure is the procedure name of the PaymentService's
 	// ReconcilePayment RPC.
 	PaymentServiceReconcilePaymentProcedure = "/payflow.v1.PaymentService/ReconcilePayment"
+	// PaymentServiceGetMerchantBalanceProcedure is the procedure name of the PaymentService's
+	// GetMerchantBalance RPC.
+	PaymentServiceGetMerchantBalanceProcedure = "/payflow.v1.PaymentService/GetMerchantBalance"
 )
 
 var (
@@ -66,6 +69,13 @@ var (
 			Procedure:  PaymentServiceReconcilePaymentProcedure,
 		}
 	})
+	paymentServiceGetMerchantBalanceSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_payflow_v1_payment_proto.Services().ByName("PaymentService").Methods().ByName("GetMerchantBalance"),
+			Procedure:  PaymentServiceGetMerchantBalanceProcedure,
+		}
+	})
 )
 
 // PaymentServiceClient is a client for the payflow.v1.PaymentService service.
@@ -74,6 +84,7 @@ type PaymentServiceClient interface {
 	GetPayment(context.Context, *v1.GetPaymentRequest) (*v1.GetPaymentResponse, error)
 	SimulatePayment(context.Context, *v1.SimulatePaymentRequest) (*v1.SimulatePaymentResponse, error)
 	ReconcilePayment(context.Context, *v1.ReconcilePaymentRequest) (*v1.ReconcilePaymentResponse, error)
+	GetMerchantBalance(context.Context, *v1.GetMerchantBalanceRequest) (*v1.GetMerchantBalanceResponse, error)
 }
 
 // NewPaymentServiceClient constructs a client for the payflow.v1.PaymentService service. Multiple
@@ -88,6 +99,7 @@ type PaymentServiceHandler interface {
 	GetPayment(context.Context, *v1.GetPaymentRequest) (*v1.GetPaymentResponse, error)
 	SimulatePayment(context.Context, *v1.SimulatePaymentRequest) (*v1.SimulatePaymentResponse, error)
 	ReconcilePayment(context.Context, *v1.ReconcilePaymentRequest) (*v1.ReconcilePaymentResponse, error)
+	GetMerchantBalance(context.Context, *v1.GetMerchantBalanceRequest) (*v1.GetMerchantBalanceResponse, error)
 }
 
 // RegisterPaymentServiceHandler registers svc as the payflow.v1.PaymentService implementation on
@@ -99,6 +111,7 @@ func RegisterPaymentServiceHandler(server *connect.Server, svc PaymentServiceHan
 		connect.Method{Spec: paymentServiceGetPaymentSpec(), Handler: adapter.getPayment},
 		connect.Method{Spec: paymentServiceSimulatePaymentSpec(), Handler: adapter.simulatePayment},
 		connect.Method{Spec: paymentServiceReconcilePaymentSpec(), Handler: adapter.reconcilePayment},
+		connect.Method{Spec: paymentServiceGetMerchantBalanceSpec(), Handler: adapter.getMerchantBalance},
 	)
 }
 
@@ -119,6 +132,10 @@ func (UnimplementedPaymentServiceHandler) SimulatePayment(context.Context, *v1.S
 
 func (UnimplementedPaymentServiceHandler) ReconcilePayment(context.Context, *v1.ReconcilePaymentRequest) (*v1.ReconcilePaymentResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "payflow.v1.PaymentService.ReconcilePayment is not implemented")
+}
+
+func (UnimplementedPaymentServiceHandler) GetMerchantBalance(context.Context, *v1.GetMerchantBalanceRequest) (*v1.GetMerchantBalanceResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "payflow.v1.PaymentService.GetMerchantBalance is not implemented")
 }
 
 type paymentServiceClient struct {
@@ -152,6 +169,14 @@ func (c *paymentServiceClient) SimulatePayment(ctx context.Context, req *v1.Simu
 func (c *paymentServiceClient) ReconcilePayment(ctx context.Context, req *v1.ReconcilePaymentRequest) (*v1.ReconcilePaymentResponse, error) {
 	var res v1.ReconcilePaymentResponse
 	if err := c.client.CallUnary(ctx, paymentServiceReconcilePaymentSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *paymentServiceClient) GetMerchantBalance(ctx context.Context, req *v1.GetMerchantBalanceRequest) (*v1.GetMerchantBalanceResponse, error) {
+	var res v1.GetMerchantBalanceResponse
+	if err := c.client.CallUnary(ctx, paymentServiceGetMerchantBalanceSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -201,6 +226,18 @@ func (h paymentServiceHandler) reconcilePayment(ctx context.Context, _ connect.S
 		return err
 	}
 	res, err := h.svc.ReconcilePayment(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h paymentServiceHandler) getMerchantBalance(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetMerchantBalanceRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetMerchantBalance(ctx, &req)
 	if err != nil {
 		return err
 	}

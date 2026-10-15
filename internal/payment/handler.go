@@ -6,9 +6,12 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	paymentv1 "payflow/gen/go/payflow/v1"
+	"payflow/internal/auth"
 	"payflow/internal/banking"
+	"payflow/internal/ledger"
 )
 
 // Handler adapts the domain service to the generated Connect service.
@@ -19,6 +22,36 @@ type Handler struct {
 		Request(context.Context, string, banking.Scenario) (Payment, error)
 	}
 	DevProcessingEnabled bool
+	AuthRequired         bool
+	Ledger               interface {
+		Balance(context.Context, string, string, string) (ledger.Balance, error)
+	}
+}
+
+func (h *Handler) merchant(ctx context.Context) (string, error) {
+	merchant, ok := auth.Merchant(ctx)
+	if h.AuthRequired && !ok {
+		return "", connect.NewError(connect.CodeUnauthenticated, "API credential required")
+	}
+	return merchant, nil
+}
+
+func (h *Handler) ownedPayment(ctx context.Context, id string) error {
+	merchant, err := h.merchant(ctx)
+	if err != nil {
+		return err
+	}
+	if !h.AuthRequired {
+		return nil
+	}
+	p, err := h.Service.Get(ctx, id)
+	if err != nil {
+		return rpcError(err)
+	}
+	if p.MerchantID != merchant {
+		return connect.NewError(connect.CodeNotFound, "payment not found")
+	}
+	return nil
 }
 
 func (h *Handler) SimulatePayment(ctx context.Context, req *paymentv1.SimulatePaymentRequest) (*paymentv1.SimulatePaymentResponse, error) {
@@ -27,6 +60,9 @@ func (h *Handler) SimulatePayment(ctx context.Context, req *paymentv1.SimulatePa
 	}
 	if req == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "request is required")
+	}
+	if err := h.ownedPayment(ctx, req.GetPaymentId()); err != nil {
+		return nil, err
 	}
 	scenario, ok := scenarioFromProto(req.GetScenario())
 	if !ok {
@@ -51,6 +87,9 @@ func (h *Handler) ReconcilePayment(ctx context.Context, req *paymentv1.Reconcile
 	}
 	if req == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "request is required")
+	}
+	if err := h.ownedPayment(ctx, req.GetPaymentId()); err != nil {
+		return nil, err
 	}
 	p, err := h.Processor.Reconcile(ctx, req.GetPaymentId())
 	if err != nil {
@@ -77,11 +116,22 @@ func scenarioFromProto(s paymentv1.SimulationScenario) (banking.Scenario, bool) 
 }
 
 func (h *Handler) CreatePayment(ctx context.Context, req *paymentv1.CreatePaymentRequest) (*paymentv1.CreatePaymentResponse, error) {
+	merchant, authErr := h.merchant(ctx)
+	if authErr != nil {
+		return nil, authErr
+	}
 	if req == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "request is required")
 	}
+	if h.AuthRequired {
+		if req.GetMerchantId() != "" && req.GetMerchantId() != merchant {
+			return nil, connect.NewError(connect.CodePermissionDenied, "merchant ID does not match credential")
+		}
+	} else {
+		merchant = req.GetMerchantId()
+	}
 	p, err := h.Service.Create(ctx, CreateInput{
-		MerchantID: req.GetMerchantId(), IdempotencyKey: req.GetIdempotencyKey(),
+		MerchantID: merchant, IdempotencyKey: req.GetIdempotencyKey(),
 		Amount: req.GetAmount(), Currency: req.GetCurrency(),
 	})
 	if err != nil {
@@ -94,11 +144,38 @@ func (h *Handler) GetPayment(ctx context.Context, req *paymentv1.GetPaymentReque
 	if req == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "request is required")
 	}
+	if err := h.ownedPayment(ctx, req.GetPaymentId()); err != nil {
+		return nil, err
+	}
 	p, err := h.Service.Get(ctx, req.GetPaymentId())
 	if err != nil {
 		return nil, rpcError(err)
 	}
 	return &paymentv1.GetPaymentResponse{Payment: toProto(p)}, nil
+}
+
+func (h *Handler) GetMerchantBalance(ctx context.Context, req *paymentv1.GetMerchantBalanceRequest) (*paymentv1.GetMerchantBalanceResponse, error) {
+	merchant, err := h.merchant(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !h.AuthRequired {
+		return nil, connect.NewError(connect.CodePermissionDenied, "merchant balance requires authentication")
+	}
+	if req == nil || req.GetCurrency() != "JPY" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "JPY currency is required")
+	}
+	if h.Ledger == nil {
+		return nil, connect.NewError(connect.CodeInternal, "ledger unavailable")
+	}
+	b, err := h.Ledger.Balance(ctx, "MERCHANT_PAYABLE", merchant, req.GetCurrency())
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &paymentv1.GetMerchantBalanceResponse{Currency: req.GetCurrency()}, nil
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, "ledger lookup failed").WithCause(err)
+	}
+	return &paymentv1.GetMerchantBalanceResponse{Currency: b.Currency, Amount: b.Amount}, nil
 }
 
 func toProto(p Payment) *paymentv1.Payment {

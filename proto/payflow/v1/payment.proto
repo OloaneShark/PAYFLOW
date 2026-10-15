@@ -13,6 +13,7 @@ service PaymentService {
   rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse);
   rpc SimulatePayment(SimulatePaymentRequest) returns (SimulatePaymentResponse);
   rpc ReconcilePayment(ReconcilePaymentRequest) returns (ReconcilePaymentResponse);
+  rpc GetMerchantBalance(GetMerchantBalanceRequest) returns (GetMerchantBalanceResponse);
 }
 
 message CreatePaymentRequest {
@@ -49,6 +50,16 @@ message ReconcilePaymentRequest {
 
 message ReconcilePaymentResponse {
   Payment payment = 1;
+}
+
+// The merchant identity comes from the API credential, never this request.
+message GetMerchantBalanceRequest {
+  string currency = 1;
+}
+
+message GetMerchantBalanceResponse {
+  string currency = 1;
+  int64 amount = 2;
 }
 
 message Payment {

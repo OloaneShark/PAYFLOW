@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"payflow/internal/banking"
+	"payflow/internal/observability"
 )
 
 type ProcessingStore interface {
@@ -20,6 +22,7 @@ type Processor struct {
 	store    ProcessingStore
 	provider banking.Provider
 	lease    time.Duration
+	Metrics  *observability.Registry
 }
 
 func NewProcessor(store ProcessingStore, provider banking.Provider) *Processor {
@@ -27,6 +30,9 @@ func NewProcessor(store ProcessingStore, provider banking.Provider) *Processor {
 }
 
 func (p *Processor) Process(ctx context.Context, id string, scenario banking.Scenario) (Payment, error) {
+	if p.Metrics != nil {
+		p.Metrics.Inc("payflow_processing_attempts_total")
+	}
 	if !validUUID(id) || !scenario.Valid() {
 		return Payment{}, ErrInvalidArgument
 	}
@@ -42,10 +48,14 @@ func (p *Processor) Process(ctx context.Context, id string, scenario banking.Sce
 	if err != nil || !ok {
 		return claimed, err
 	}
+	slog.InfoContext(ctx, "payment processing claimed", "request_id", observability.RequestID(ctx), "payment_id", claimed.ID, "merchant_id", claimed.MerchantID, "provider_operation_id", claimed.ProviderOperationID)
 	return p.execute(ctx, claimed, token)
 }
 
 func (p *Processor) Reconcile(ctx context.Context, id string) (Payment, error) {
+	if p.Metrics != nil {
+		p.Metrics.Inc("payflow_reconciliation_attempts_total")
+	}
 	if !validUUID(id) {
 		return Payment{}, ErrInvalidArgument
 	}
@@ -57,15 +67,27 @@ func (p *Processor) Reconcile(ctx context.Context, id string) (Payment, error) {
 	if err != nil || !ok {
 		return claimed, err
 	}
+	slog.InfoContext(ctx, "payment reconciliation claimed", "request_id", observability.RequestID(ctx), "payment_id", claimed.ID, "merchant_id", claimed.MerchantID, "provider_operation_id", claimed.ProviderOperationID)
 	op := banking.Operation{ID: claimed.ProviderOperationID, PaymentID: claimed.ID, Scenario: claimed.ProcessingScenario}
 	outcome, err := p.provider.Lookup(ctx, op)
 	if err != nil {
+		if p.Metrics != nil {
+			p.Metrics.Inc("payflow_reconciliation_failures_total")
+		}
 		return p.uncertain(ctx, claimed, token, err)
 	}
 	if outcome == banking.Approved || outcome == banking.Declined {
-		return p.finishOutcome(ctx, claimed, token, outcome)
+		result, finishErr := p.finishOutcome(ctx, claimed, token, outcome)
+		if finishErr != nil && p.Metrics != nil {
+			p.Metrics.Inc("payflow_reconciliation_failures_total")
+		}
+		return result, finishErr
 	}
-	return p.execute(ctx, claimed, token)
+	result, executeErr := p.execute(ctx, claimed, token)
+	if (executeErr != nil || result.Status == StatusReconciliationRequired) && p.Metrics != nil {
+		p.Metrics.Inc("payflow_reconciliation_failures_total")
+	}
+	return result, executeErr
 }
 
 func (p *Processor) execute(ctx context.Context, claimed Payment, token string) (Payment, error) {
@@ -90,7 +112,18 @@ func (p *Processor) finishOutcome(ctx context.Context, claimed Payment, token st
 	if !ValidTransition(claimed.Status, target) {
 		return Payment{}, ErrInvalidTransition
 	}
-	return p.store.Finish(ctx, claimed.ID, token, target, "")
+	result, err := p.store.Finish(ctx, claimed.ID, token, target, "")
+	if err == nil && p.Metrics != nil {
+		if target == StatusCompleted {
+			p.Metrics.Inc("payflow_approvals_total")
+		} else {
+			p.Metrics.Inc("payflow_declines_total")
+		}
+	}
+	if err == nil {
+		slog.InfoContext(ctx, "payment outcome recorded", "request_id", observability.RequestID(ctx), "payment_id", claimed.ID, "merchant_id", claimed.MerchantID, "provider_operation_id", claimed.ProviderOperationID, "status", target)
+	}
+	return result, err
 }
 
 func (p *Processor) uncertain(ctx context.Context, claimed Payment, token string, cause error) (Payment, error) {
@@ -101,5 +134,6 @@ func (p *Processor) uncertain(ctx context.Context, claimed Payment, token string
 	if err != nil {
 		return Payment{}, fmt.Errorf("record uncertain provider outcome: %w", err)
 	}
+	slog.WarnContext(ctx, "payment outcome uncertain", "request_id", observability.RequestID(ctx), "payment_id", claimed.ID, "merchant_id", claimed.MerchantID, "provider_operation_id", claimed.ProviderOperationID, "error_category", "provider_uncertain")
 	return result, nil
 }
