@@ -17,7 +17,8 @@ flowchart TD
     F --> G[Phase 2 processor claims payment]
     G --> H[Durable mock provider by stable operation ID]
     H --> I{Confirmed outcome?}
-    I -- Approved --> J[COMPLETED]
+    I -- Approved --> P[Atomic journal posting and COMPLETED update]
+    P --> J[COMPLETED]
     I -- Declined --> K[FAILED]
     I -- Unknown --> L[RECONCILIATION_REQUIRED]
     L --> M[Temporal timer with bounded backoff]
@@ -30,7 +31,7 @@ The workflow only schedules activities and timers using Temporal's deterministic
 
 ## State and provider guarantees
 
-The processor atomically changes `CREATED` to `PROCESSING`, assigning one provider operation ID, scenario, claim token, and 30-second lease. It never holds a payment transaction open during the provider call. Legal transitions are `CREATED → PROCESSING`, `PROCESSING → COMPLETED|FAILED|RECONCILIATION_REQUIRED`, and `RECONCILIATION_REQUIRED → PROCESSING`. Terminal states cannot transition. Go checks transitions; conditional SQL checks claim ownership; a PostgreSQL trigger rejects invalid status changes, changed operation IDs, and terminal states without a matching persisted provider approval or decline.
+The processor atomically changes `CREATED` to `PROCESSING`, assigning one provider operation ID, scenario, claim token, and 30-second lease. It never holds a payment transaction open during the provider call. Legal transitions are `CREATED → PROCESSING`, `PROCESSING → COMPLETED|FAILED|RECONCILIATION_REQUIRED`, and `RECONCILIATION_REQUIRED → PROCESSING`. Terminal states cannot transition. Go checks transitions; conditional SQL checks claim ownership; PostgreSQL triggers reject invalid status changes, changed operation IDs, terminal states without a matching provider decision, and new completions without an approval journal.
 
 Reconciliation claims `RECONCILIATION_REQUIRED` or expired `PROCESSING`. It first looks up the original provider operation ID. A recorded decision is applied without another provider execution. A pending or absent decision may be retried with that same ID. If the payment update fails after provider approval, the lease expires and a later activity recovers the recorded decision. No new provider operation ID is allocated during reconciliation.
 
@@ -46,13 +47,41 @@ Reconciliation claims `RECONCILIATION_REQUIRED` or expired `PROCESSING`. It firs
 
 The provider and payment tables share local PostgreSQL but use separate statements. This models a provider decision that outlives a failed payment update. The provider decision, operation ID, and payment state survive API and worker process restarts. Temporal's development server keeps workflow history in its Compose SQLite volume, so ordinary worker restarts resume scheduled timers and activities.
 
+## Double-entry accounting
+
+Migration 004 adds `ledger_accounts`, `ledger_journals`, and `ledger_entries`. There is one shared `PROVIDER_RECEIVABLE` account per currency and one `MERCHANT_PAYABLE` account per merchant and currency. A `PAYMENT_APPROVAL` journal debits the provider receivable and credits the merchant payable by the approved whole-yen amount. The receivable is an unsettled simulated claim. It does not represent funds held at a bank.
+
+```mermaid
+flowchart TD
+    A[Provider approval stored] --> B[Begin PostgreSQL transaction]
+    B --> C[Lock payment and verify claim token]
+    C --> D[Verify original provider operation is APPROVED]
+    D --> E[Get or create ledger accounts]
+    E --> F[Insert unique approval journal]
+    F --> G[Insert provider debit and merchant credit]
+    G --> H[Update payment to COMPLETED]
+    H --> I{Deferred journal validation and commit}
+    I -- Valid --> J[Journal and COMPLETED visible together]
+    I -- Error --> K[Roll back both; provider decision remains]
+```
+
+`storage.Finish` opens the transaction only after the provider call has returned. It locks the `PROCESSING` payment, verifies its claim token, calls `ledger.PostApprovalTx`, updates the payment, and commits. A deferred PostgreSQL constraint trigger requires exactly one debit and one credit of positive, equal amounts in the journal currency; checks the account roles, merchant, payment amount, and durable provider approval; and requires the payment to be `COMPLETED` at commit. Another trigger requires the journal before any new `COMPLETED` transition. Journal and entry updates or deletions are rejected; entries can only be added in their journal's original posting transaction. A `(payment_id, purpose)` unique constraint and the payment row lock make retries and concurrent activities one accounting effect. The provider table also prevents rewriting a confirmed decision.
+
+Read-only ledger methods return journals and entries by payment, provider receivable and merchant payable balances, and completed payments with missing or inconsistent journals. No ledger write is exposed through ConnectRPC. A decline or uncertain provider outcome creates no approval journal.
+
+## Historical upgrade and operator recovery
+
+Migration 004 preserves older `COMPLETED` payments, which have no ledger journal yet. After migration, run `operator issues` and the explicit `operator backfill --confirm` before starting processing. Backfill locks each historical payment, verifies its original provider operation is durably `APPROVED`, and posts the matching journal. It processes one payment per transaction, so interruption leaves earlier postings intact and rerunning skips them. An inconsistent historical record is reported and cannot be posted from its status label alone.
+
+`cmd/operator` accepts loopback PostgreSQL connections only and has no public endpoint. Its inspection, balance, expired-claim, unresolved-payment, and ledger-issue commands are read-only. `recover ID --confirm` and `backfill --confirm` create `operator_actions` audit records; a trigger prevents deletion or rewriting after completion. Recovery accepts `RECONCILIATION_REQUIRED` or expired `PROCESSING`, rejects active claims and terminal payments, then calls the existing processor's reconciliation path. The processor looks up the original provider operation ID before retrying; conditional claims prevent overriding another worker. Unknown outcomes stay uncertain. Recovery of a claim left after PostgreSQL was unavailable beyond the Temporal window is operator-triggered after connectivity returns.
+
 ## Migration and API compatibility
 
-Migration 001 is unchanged. Migration 002 added the Phase 2 lifecycle and provider tables. Forward migration 003 adds the dispatch table without rewriting existing payments or idempotency keys. The migration runner records applied versions and runs each in a transaction. Phase 1 Protobuf fields and methods remain intact; the Phase 2 simulation methods still require `PAYFLOW_ENABLE_DEV_PROCESSING=true` and a loopback API address. They have no authentication layer and must remain local-only.
+Migrations 001–003 are unchanged. Forward migration 004 adds accounting and operator audit tables and extends the payment transition trigger. The migration runner records applied versions and runs each in a transaction. Phase 1 Protobuf fields and methods remain intact; the Phase 2 simulation methods still require `PAYFLOW_ENABLE_DEV_PROCESSING=true` and a loopback API address. They have no authentication layer and must remain local-only.
 
 ## Limits and next phase
 
-- Only whole-yen JPY amounts are accepted. There is no real money movement, external bank, settlement, refund, or ledger.
+- Only whole-yen JPY amounts are accepted. There is no real money movement, external bank, settlement, or refund.
 - A permanently unknown outcome needs manual investigation after the reconciliation window. The local `ReconcilePayment` operation remains available.
-- A continuous PostgreSQL outage beyond the reconciliation window may prevent the worker from recording `RECONCILIATION_REQUIRED`; the last persisted status can remain `PROCESSING` until the database returns and an operator reconciles it. A short reconciliation window relative to the 30-second lease also delays recovery of an interrupted claim.
-- The development server, API, and worker are for local demonstration. There is no production Temporal deployment, access control, or operational alerting. Phase 4 could add a simulated double-entry ledger and explicit operator recovery tooling.
+- A continuous PostgreSQL outage beyond the reconciliation window may leave the last persisted status at `PROCESSING`. The operator lists expired claims and can reconcile them after connectivity returns. A short reconciliation window relative to the 30-second lease delays recovery of an interrupted claim.
+- Operator recovery is manually triggered. There is no production access control, alerting, automated stale-claim sweep, or production Temporal deployment. A later phase could add these operational controls and simulated settlement or reversal workflows.

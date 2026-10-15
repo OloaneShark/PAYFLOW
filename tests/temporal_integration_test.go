@@ -137,6 +137,13 @@ func TestTemporalProcessingOutcomesAndIdempotency(t *testing.T) {
 			if charges != tc.charges {
 				t.Fatalf("logical charges = %d, want %d", charges, tc.charges)
 			}
+			wantJournals := 0
+			if tc.final == payment.StatusCompleted {
+				wantJournals = 1
+			}
+			if got := journalCount(t, pool, created.ID); got != wantJournals {
+				t.Fatalf("approval journals = %d, want %d", got, wantJournals)
+			}
 			var providerRows int
 			if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM simulated_provider_operations WHERE payment_id=$1`, created.ID).Scan(&providerRows); err != nil || providerRows != 1 {
 				t.Fatalf("provider rows = %d, err = %v", providerRows, err)

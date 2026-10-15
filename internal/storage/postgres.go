@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"payflow/internal/banking"
+	"payflow/internal/ledger"
 	"payflow/internal/payment"
 )
 
@@ -135,6 +136,9 @@ func (s *Postgres) Finish(ctx context.Context, id, token, target, reason string)
 	if !payment.ValidTransition(payment.StatusProcessing, target) {
 		return payment.Payment{}, payment.ErrInvalidTransition
 	}
+	if target == payment.StatusCompleted {
+		return s.finishCompleted(ctx, id, token)
+	}
 	query := `UPDATE payments SET status = $3, processing_token = NULL, processing_lease_until = NULL,
         completed_at = CASE WHEN $3 = 'COMPLETED' THEN now() ELSE completed_at END,
         failed_at = CASE WHEN $3 = 'FAILED' THEN now() ELSE failed_at END,
@@ -151,4 +155,42 @@ func (s *Postgres) Finish(ctx context.Context, id, token, target, reason string)
 		return payment.Payment{}, fmt.Errorf("finish payment: %w", err)
 	}
 	return p, nil
+}
+
+func (s *Postgres) finishCompleted(ctx context.Context, id, token string) (payment.Payment, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return payment.Payment{}, fmt.Errorf("begin payment completion: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var status, claimToken string
+	err = tx.QueryRow(ctx, `SELECT status, COALESCE(processing_token::text,'')
+		FROM payments WHERE id=$1 FOR UPDATE`, id).Scan(&status, &claimToken)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return payment.Payment{}, payment.ErrNotFound
+	}
+	if err != nil {
+		return payment.Payment{}, fmt.Errorf("lock payment completion: %w", err)
+	}
+	if status != payment.StatusProcessing || claimToken != token {
+		return payment.Payment{}, payment.ErrInvalidTransition
+	}
+	if _, err := ledger.PostApprovalTx(ctx, tx, id); err != nil {
+		return payment.Payment{}, fmt.Errorf("post approval journal: %w", err)
+	}
+	query := `UPDATE payments SET status='COMPLETED', processing_token=NULL,
+		processing_lease_until=NULL, completed_at=now(), last_processing_error=NULL, updated_at=now()
+		WHERE id=$1 AND status='PROCESSING' AND processing_token=$2
+		RETURNING ` + paymentColumns
+	var result payment.Payment
+	if err := scanPayment(tx.QueryRow(ctx, query, id, token), &result); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return payment.Payment{}, payment.ErrInvalidTransition
+		}
+		return payment.Payment{}, fmt.Errorf("finish approved payment: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return payment.Payment{}, fmt.Errorf("commit payment completion and journal: %w", err)
+	}
+	return result, nil
 }
