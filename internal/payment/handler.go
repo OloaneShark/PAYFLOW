@@ -13,13 +13,16 @@ import (
 
 // Handler adapts the domain service to the generated Connect service.
 type Handler struct {
-	Service              *Service
-	Processor            *Processor
+	Service      *Service
+	Processor    *Processor
+	Orchestrator interface {
+		Request(context.Context, string, banking.Scenario) (Payment, error)
+	}
 	DevProcessingEnabled bool
 }
 
 func (h *Handler) SimulatePayment(ctx context.Context, req *paymentv1.SimulatePaymentRequest) (*paymentv1.SimulatePaymentResponse, error) {
-	if !h.DevProcessingEnabled || h.Processor == nil {
+	if !h.DevProcessingEnabled || (h.Processor == nil && h.Orchestrator == nil) {
 		return nil, connect.NewError(connect.CodePermissionDenied, "simulation is disabled")
 	}
 	if req == nil {
@@ -29,7 +32,13 @@ func (h *Handler) SimulatePayment(ctx context.Context, req *paymentv1.SimulatePa
 	if !ok {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "simulation scenario is required")
 	}
-	p, err := h.Processor.Process(ctx, req.GetPaymentId(), scenario)
+	var p Payment
+	var err error
+	if h.Orchestrator != nil {
+		p, err = h.Orchestrator.Request(ctx, req.GetPaymentId(), scenario)
+	} else {
+		p, err = h.Processor.Process(ctx, req.GetPaymentId(), scenario)
+	}
 	if err != nil {
 		return nil, rpcError(err)
 	}
@@ -135,6 +144,8 @@ func rpcError(err error) error {
 		return connect.NewError(connect.CodeFailedPrecondition, "payment cannot make this transition").WithCause(err)
 	case errors.Is(err, ErrNotFound):
 		return connect.NewError(connect.CodeNotFound, "payment not found").WithCause(err)
+	case errors.Is(err, ErrWorkflowUnavailable):
+		return connect.NewError(connect.CodeUnavailable, "workflow dispatch is queued for recovery").WithCause(err)
 	case errors.Is(err, context.Canceled):
 		return connect.NewError(connect.CodeCanceled, "request canceled").WithCause(err)
 	case errors.Is(err, context.DeadlineExceeded):

@@ -15,5 +15,17 @@ services:
     volumes:
       - payflow_pgdata:/var/lib/postgresql/data
 
+  temporal:
+    image: temporalio/temporal:1.9.1
+    # The named volume starts root-owned; this local-only server writes SQLite there.
+    user: "0:0"
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/var/lib/temporal/temporal.db"]
+    ports:
+      - "127.0.0.1:7233:7233"
+      - "127.0.0.1:8233:8233"
+    volumes:
+      - payflow_temporaldata:/var/lib/temporal
+
 volumes:
   payflow_pgdata:
+  payflow_temporaldata:

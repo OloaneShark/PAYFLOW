@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	paymentv1connect "payflow/gen/go/payflow/v1/payflowv1connect"
 	"payflow/internal/banking"
+	"payflow/internal/orchestration"
 	"payflow/internal/payment"
 	"payflow/internal/storage"
 )
@@ -49,8 +50,16 @@ func main() {
 	store := &storage.Postgres{Pool: pool}
 	service := payment.NewService(store)
 	processor := payment.NewProcessor(store, &banking.Postgres{Pool: pool})
+	var coordinator *orchestration.Coordinator
+	if devProcessing {
+		config, err := orchestration.ConfigFromEnv()
+		if err != nil {
+			log.Fatal(err)
+		}
+		coordinator = &orchestration.Coordinator{Store: store, Starter: &orchestration.TemporalStarter{Config: config}}
+	}
 	server := connect.NewServer()
-	paymentv1connect.RegisterPaymentServiceHandler(server, &payment.Handler{Service: service, Processor: processor, DevProcessingEnabled: devProcessing})
+	paymentv1connect.RegisterPaymentServiceHandler(server, &payment.Handler{Service: service, Processor: processor, Orchestrator: coordinator, DevProcessingEnabled: devProcessing})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })

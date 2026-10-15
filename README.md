@@ -1,6 +1,6 @@
 # PAYFLOW
 
-PAYFLOW is a simulated payment backend written in Go. It stores JPY-denominated payment requests in PostgreSQL, then exercises a durable mock banking provider through ConnectRPC. It does not move money or contact banks.
+PAYFLOW is a simulated payment backend written in Go. It stores JPY-denominated payment requests in PostgreSQL and orchestrates a durable mock banking provider through Temporal. It does not move money or contact banks.
 
 ## Payment lifecycle
 
@@ -9,12 +9,12 @@ PAYFLOW is a simulated payment backend written in Go. It stores JPY-denominated 
 - `RECONCILIATION_REQUIRED` can be claimed for reconciliation and return to `PROCESSING`. Reconciliation queries the durable provider record, then retries only with the same operation ID when the result is still unknown.
 - Repeating the same merchant/key and amount/currency returns the original payment, including its current status. Reusing the key with a changed valid payload, such as a different amount, returns `ALREADY_EXISTS`. Unsupported currencies are rejected as `INVALID_ARGUMENT` before idempotency lookup.
 - `GetPayment` looks up a payment by UUID. Missing IDs return `NOT_FOUND`; malformed IDs return `INVALID_ARGUMENT`.
-- `SimulatePayment` and `ReconcilePayment` are **development-only** operations. They are disabled by default. Enabling them requires a loopback listening address. Do not expose this API on a public interface.
+- `SimulatePayment` and `ReconcilePayment` are **development-only** operations. They are disabled by default and require a loopback listening address. Do not expose this API on a public interface. `SimulatePayment` persists a workflow request and returns the current payment; processing is asynchronous. `ReconcilePayment` remains an immediate manual recovery operation.
 - All operations are simulated records only. There is no authorization, settlement, refund, ledger, or external provider.
 
 ## Requirements and selected versions
 
-Go 1.27.2, PostgreSQL 17.6 (Compose image), Buf CLI 1.73.0, `protoc-gen-go` v1.36.12, `protoc-gen-connect-go` v2.0.0, ConnectRPC v2.0.0, and pgx v5.11.0. `go.mod` and `go.sum` lock library versions. The generated Go code is committed; Buf and its plugins are needed only to regenerate it. Go 1.27 is the supported toolchain for this project.
+Go 1.27.2, PostgreSQL 17.6 (Compose image), Temporal development server image `temporalio/temporal:1.9.1`, Temporal Go SDK v1.49.0, Buf CLI 1.73.0, `protoc-gen-go` v1.36.12, `protoc-gen-connect-go` v2.0.0, ConnectRPC v2.0.0, and pgx v5.11.0. `go.mod` and `go.sum` lock library versions. The generated Go code is committed; Buf and its plugins are needed only to regenerate it.
 
 ## Local setup (Windows PowerShell)
 
@@ -25,12 +25,20 @@ docker compose up -d --wait
 Copy-Item .env.example .env
 $env:DATABASE_URL = 'postgres://payflow:payflow@localhost:5432/payflow?sslmode=disable'
 go run ./cmd/migrate
+$env:PAYFLOW_ENABLE_DEV_PROCESSING = 'true'
 go run ./cmd/api
 ```
 
-The API listens on `127.0.0.1:8080` by default. `.env` is an example for your shell or tooling; the Go programs read environment variables directly. To choose another address, set `$env:LISTEN_ADDR`.
+In a second PowerShell window, start the worker:
 
-To enable local simulation, set `$env:PAYFLOW_ENABLE_DEV_PROCESSING = 'true'` before `go run ./cmd/api`. The server refuses this setting when `LISTEN_ADDR` is not loopback. Run `go run ./cmd/migrate` after pulling Phase 2 changes; migration 002 preserves Phase 1 payments and idempotency keys.
+```powershell
+$env:DATABASE_URL = 'postgres://payflow:payflow@localhost:5432/payflow?sslmode=disable'
+go run ./cmd/worker
+```
+
+The API listens on `127.0.0.1:8080`; Temporal gRPC listens on `127.0.0.1:7233` and its UI is at `http://127.0.0.1:8233`. `.env` is an example for your shell or tooling; the Go programs read environment variables directly.
+
+Omit `PAYFLOW_ENABLE_DEV_PROCESSING` to keep simulation disabled. The server refuses this setting when `LISTEN_ADDR` is not loopback. Migration 003 adds a durable workflow dispatch table without changing existing payments. `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE`, and `TEMPORAL_TASK_QUEUE` are configurable in both processes. The API passes `PAYFLOW_RECONCILE_INTERVAL` (default `2s`), `PAYFLOW_RECONCILE_MAX_INTERVAL` (`30s`), and `PAYFLOW_RECONCILE_WINDOW` (`2m`) into each new workflow.
 
 In a second PowerShell window, create and fetch a sample payment:
 
@@ -63,43 +71,44 @@ function Invoke-DemoReconcile($id) {
 }
 
 $approved = New-DemoPayment 'approved-1'
-Invoke-DemoScenario $approved 'SIMULATION_SCENARIO_APPROVE'             # COMPLETED
+Invoke-DemoScenario $approved 'SIMULATION_SCENARIO_APPROVE'             # queued; eventually COMPLETED
 $declined = New-DemoPayment 'declined-1'
-Invoke-DemoScenario $declined 'SIMULATION_SCENARIO_DECLINE'             # FAILED
+Invoke-DemoScenario $declined 'SIMULATION_SCENARIO_DECLINE'             # queued; eventually FAILED
 $uncertain = New-DemoPayment 'timeout-1'
-Invoke-DemoScenario $uncertain 'SIMULATION_SCENARIO_NETWORK_TIMEOUT'    # RECONCILIATION_REQUIRED
-Invoke-DemoReconcile $uncertain                                        # still uncertain
+Invoke-DemoScenario $uncertain 'SIMULATION_SCENARIO_NETWORK_TIMEOUT'    # eventually RECONCILIATION_REQUIRED
 $lost = New-DemoPayment 'lost-response-1'
-Invoke-DemoScenario $lost 'SIMULATION_SCENARIO_LOST_APPROVAL_RESPONSE'  # uncertain
-Invoke-DemoReconcile $lost                                             # COMPLETED
+Invoke-DemoScenario $lost 'SIMULATION_SCENARIO_LOST_APPROVAL_RESPONSE'  # uncertain, then COMPLETED
 $temporary = New-DemoPayment 'temporary-1'
-Invoke-DemoScenario $temporary 'SIMULATION_SCENARIO_TEMPORARY_FAILURE'  # uncertain
-Invoke-DemoReconcile $temporary                                        # COMPLETED
+Invoke-DemoScenario $temporary 'SIMULATION_SCENARIO_TEMPORARY_FAILURE'  # uncertain, then COMPLETED
+Invoke-DemoScenario $approved 'SIMULATION_SCENARIO_APPROVE'             # same workflow and charge
+$get = @{paymentId=$approved} | ConvertTo-Json -Compress
+Invoke-RestMethod -Uri "$base/GetPayment" -Method Post -ContentType 'application/json' -Body $get
 ```
 
-Restart the API between simulation and reconciliation to exercise durable recovery. A duplicate `SimulatePayment` call returns the existing payment and does not issue another provider operation. A scenario change on the same payment returns `ALREADY_EXISTS`.
+Poll `GetPayment` for the eventual status. The Temporal UI shows each workflow as `payflow-payment-<paymentId>`. Stop and restart the worker while a workflow waits to see it resume. If Temporal is unavailable, `SimulatePayment` returns `UNAVAILABLE` after saving the dispatch request; the worker scans pending requests every two seconds after recovery. A duplicate `SimulatePayment` does not issue another provider operation. A scenario change returns `ALREADY_EXISTS`. After the reconciliation window, a permanently unknown timeout stays `RECONCILIATION_REQUIRED` for manual investigation; `ReconcilePayment` remains available locally.
 
 ## Build, generate, and test
 
 ```powershell
 go mod download
 go build ./...
-go test ./...
+go test -count=1 ./...
 go vet ./...
 gofmt -l (rg --files -g '*.go')
 buf lint
 buf generate
 ```
 
-`go test ./...` runs unit tests and skips PostgreSQL integration tests when `TEST_DATABASE_URL` is unset. Use a disposable test database for integration tests:
+`go test -count=1 ./...` runs unit tests and skips PostgreSQL or Temporal integration tests when their dependency environment variables are unset. Use a disposable test database for integration tests:
 
 ```powershell
 docker compose exec postgres createdb -U payflow payflow_test
 $env:TEST_DATABASE_URL = 'postgres://payflow:payflow@localhost:5432/payflow_test?sslmode=disable'
-go test -count=1 ./tests
+$env:TEST_TEMPORAL_ADDRESS = '127.0.0.1:7233'
+go test -count=1 ./...
 ```
 
-The integration test applies migrations to `payflow_test` and leaves test rows there. To recreate the test database, use a fresh Compose volume or drop and create the database while no tests are running.
+The integration tests apply migrations to `payflow_test` and leave test rows there. To recreate the test database, use a fresh Compose volume or drop and create the database while no tests are running. Temporal's local SQLite state persists in the Compose `payflow_temporaldata` volume.
 
 To regenerate protobuf and Connect code, install the pinned plugins and put Go's binary directory on PATH:
 
@@ -118,10 +127,12 @@ The checked-in `buf.gen.yaml` uses local plugins to avoid depending on a hosted 
 | Path | Purpose |
 | --- | --- |
 | `cmd/api` | ConnectRPC HTTP server |
+| `cmd/worker` | Temporal worker and pending dispatch scanner |
 | `cmd/migrate` | Embedded SQL migration runner |
 | `internal/payment` | Validation, lifecycle, processing service, RPC adapter |
 | `internal/banking` | Durable local mock provider and scenarios |
 | `internal/storage` | PostgreSQL persistence through pgx |
+| `internal/orchestration` | Workflow, activity, and dispatch coordinator |
 | `proto/payflow/v1` | Protobuf API contract |
 | `gen/go` | Generated Protobuf and Connect code |
 | `db/migrations` | Versioned SQL and migration runner |

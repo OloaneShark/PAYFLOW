@@ -14,11 +14,12 @@ import (
 )
 
 var (
-	ErrInvalidArgument   = errors.New("invalid argument")
-	ErrConflict          = errors.New("idempotency key is already used for a different request")
-	ErrNotFound          = errors.New("payment not found")
-	ErrInvalidTransition = errors.New("invalid payment status transition")
-	ErrScenarioConflict  = errors.New("payment already uses a different simulation scenario")
+	ErrInvalidArgument     = errors.New("invalid argument")
+	ErrConflict            = errors.New("idempotency key is already used for a different request")
+	ErrNotFound            = errors.New("payment not found")
+	ErrInvalidTransition   = errors.New("invalid payment status transition")
+	ErrScenarioConflict    = errors.New("payment already uses a different simulation scenario")
+	ErrWorkflowUnavailable = errors.New("Temporal workflow start unavailable")
 )
 
 type Payment struct {
@@ -133,3 +134,6 @@ func validUUID(s string) bool {
 	}
 	return true
 }
+
+// ValidPaymentID reports whether id has the UUID format used by payments.
+func ValidPaymentID(id string) bool { return validUUID(id) }
