@@ -18,6 +18,7 @@ import (
 	paymentv1connect "payflow/gen/go/payflow/v1/payflowv1connect"
 	"payflow/internal/auth"
 	"payflow/internal/banking"
+	"payflow/internal/config"
 	"payflow/internal/ledger"
 	"payflow/internal/observability"
 	"payflow/internal/orchestration"
@@ -28,16 +29,17 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(logger)
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		logger.Error("DATABASE_URL is required")
-		os.Exit(1)
-	}
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
 	devProcessing := os.Getenv("PAYFLOW_ENABLE_DEV_PROCESSING") == "true"
+	if os.Getenv("PAYFLOW_ENV") == "production" {
+		if addr != "0.0.0.0:8080" || os.Getenv("PAYFLOW_ENABLE_DEV_PROCESSING") == "true" {
+			logger.Error("production requires LISTEN_ADDR=0.0.0.0:8080 and simulation disabled")
+			os.Exit(1)
+		}
+	}
 	if devProcessing {
 		host, _, err := net.SplitHostPort(addr)
 		if err != nil || !(host == "localhost" || net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()) {
@@ -64,7 +66,12 @@ func main() {
 		logger.Error("PAYFLOW_METRICS_ADDR must be loopback")
 		os.Exit(1)
 	}
-	pool, err := pgxpool.New(ctx, url)
+	dbConfig, err := config.Database()
+	if err != nil {
+		logger.Error("invalid database configuration", "error_category", "configuration")
+		os.Exit(1)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, dbConfig)
 	if err != nil {
 		logger.Error("database pool failed", "error_category", "database")
 		os.Exit(1)
@@ -110,7 +117,7 @@ func main() {
 		checks = append(checks, func(ctx context.Context) error {
 			checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
-			c, err := client.DialContext(checkCtx, client.Options{HostPort: temporalConfig.Address, Namespace: temporalConfig.Namespace})
+			c, err := client.DialContext(checkCtx, temporalConfig.ClientOptions())
 			if err != nil {
 				return err
 			}

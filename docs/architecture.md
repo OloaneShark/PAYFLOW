@@ -1,5 +1,7 @@
 # PAYFLOW architecture
 
+For the private AWS deployment proposal, see [AWS architecture](aws-architecture.md), [deployment sequence](deployment.md), and [cost categories](costs.md). Phase 6 packages the existing simulated system for ECS and external Temporal Cloud without changing its payment or ledger semantics. Production configuration requires verified RDS TLS and authenticated Temporal Cloud TLS; the production API disables development simulation. The deployed worker can resume existing durable workflows and recovery records, while a separately authorized production processing trigger is future work. The local-only credential and operator CLIs remain restricted to loopback PostgreSQL.
+
 ## Request and workflow path
 
 The Go API mounts generated ConnectRPC v2 handlers. `CreatePayment` validates whole-yen JPY amounts and relies on PostgreSQL's unique `(merchant_id, idempotency_key)` constraint. An identical request returns the same payment, including its current status; a changed valid payload conflicts. Creating a payment never starts processing.

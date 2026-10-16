@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars (ignored), then replace placeholders.
+aws_region                       = "us-east-1"
+availability_zones              = ["us-east-1a", "us-east-1b"]
+private_client_cidr             = "10.42.0.0/24"
+internal_alb_certificate_arn    = "arn:aws:acm:us-east-1:123456789012:certificate/replace-me"
+
+# First apply: leave enable_runtime=false and desired counts at zero.
+enable_runtime = false
+
+# Later, after the bootstrap steps in docs/deployment.md:
+# enable_runtime       = true
+# temporal_address     = "your-namespace.your-account.tmprl.cloud:7233"
+# temporal_namespace   = "your-namespace.your-account"
+# api_image_digest     = "sha256:<64 lowercase hex characters>"
+# worker_image_digest  = "sha256:<64 lowercase hex characters>"
+# migrate_image_digest = "sha256:<64 lowercase hex characters>"
+# migrations_complete  = true  # only after the one-off task and backfill review
+# api_desired_count     = 1
+# worker_desired_count  = 1

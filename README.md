@@ -2,6 +2,14 @@
 
 PAYFLOW is a simulated payment backend written in Go. It stores JPY-denominated payment requests in PostgreSQL and orchestrates a durable mock banking provider through Temporal. It does not move money or contact banks.
 
+## AWS readiness (Phase 6)
+
+The repository now includes three multi-stage Linux container targets (`api`, `worker`, `migrate`), a production configuration for RDS hostname-verified TLS and Temporal Cloud API-key TLS, and Terraform for a private AWS ECS Fargate deployment. Terraform defines private API/worker tasks, isolated RDS, an internal HTTPS ALB, ECR, Secrets Manager secret containers, IAM roles, CloudWatch logs and basic alarms. Services begin at zero desired tasks until migrations and historical backfill are reviewed. The local Docker Compose workflow below remains the development environment.
+
+**No AWS resources are provisioned by this repository or CI.** Deployment requires an approved private client route, certificate, remote Terraform state, Temporal Cloud namespace, application database user, and a private administration path for credentials and backfill. The existing local-only administration commands intentionally cannot be run against RDS. Production disables the simulation methods and retains merchant bearer authentication; the current production API supports Create/Get/Balance while a separately authorized processing trigger remains future work.
+
+See [AWS architecture](docs/aws-architecture.md), [PowerShell deployment runbook](docs/deployment.md), and [cost categories](docs/costs.md). These documents describe prerequisites, staging, validation, teardown, and limits. No real banking integration is included.
+
 ## Payment lifecycle
 
 - `CreatePayment` derives a nonempty merchant ID from the API credential and accepts a nonempty idempotency key, a positive integer amount in JPY, and the literal currency `JPY`. Amounts are whole yen (`int64`), never floating point.
@@ -45,6 +53,8 @@ Backfill is safe to rerun after interruption. It stops and reports an inconsiste
 ## Requirements and selected versions
 
 Go 1.27.2, PostgreSQL 17.6 (Compose image), Temporal development server image `temporalio/temporal:1.9.1`, Temporal Go SDK v1.49.0, Buf CLI 1.73.0, `protoc-gen-go` v1.36.12, `protoc-gen-connect-go` v2.0.0, ConnectRPC v2.0.0, pgx v5.11.0, and OpenTelemetry Go v1.44.0. `go.mod` and `go.sum` lock library versions. The generated Go code is committed; Buf and its plugins are needed only to regenerate it.
+
+Phase 6 also uses Terraform CLI 1.14.9 and pins the AWS provider to 6.64.0 with a committed lock file. The Dockerfile pins the Go 1.27.2 Bookworm builder and distroless Debian 12 non-root runtime by image digest. The checked-in RDS global CA bundle is a public trust anchor, not a credential.
 
 ## Local setup (Windows PowerShell)
 
@@ -205,6 +215,10 @@ The checked-in `buf.gen.yaml` uses local plugins to avoid depending on a hosted 
 | `cmd/operator` | Local inspection, backfill, and audited recovery |
 | `cmd/credentials` | Local merchant key provisioning, rotation, and revocation |
 | `cmd/migrate` | Embedded SQL migration runner |
+| `cmd/healthcheck` | Loopback HTTP readiness probe used by containers |
+| `internal/config` | Shared database configuration and production TLS requirements |
+| `infrastructure/terraform` | Private AWS deployment definition and example inputs |
+| `.github/workflows` | CI checks without deployment |
 | `internal/payment` | Validation, lifecycle, processing service, RPC adapter |
 | `internal/banking` | Durable local mock provider and scenarios |
 | `internal/storage` | PostgreSQL persistence through pgx |

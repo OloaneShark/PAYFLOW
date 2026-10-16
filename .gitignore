@@ -4,3 +4,10 @@ bin/
 coverage.out
 *.exe
 *.test
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+*.tfplan
+crash.log

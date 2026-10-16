@@ -96,7 +96,7 @@ type TemporalStarter struct{ Config Config }
 func (s *TemporalStarter) Start(ctx context.Context, req storage.DispatchRequest) error {
 	clientCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	c, err := client.DialContext(clientCtx, client.Options{HostPort: s.Config.Address, Namespace: s.Config.Namespace})
+	c, err := client.DialContext(clientCtx, s.Config.ClientOptions())
 	if err != nil {
 		return err
 	}

@@ -1,0 +1,12 @@
+.git
+.github
+.tools
+.env
+.env.*
+!/.env.example
+tests
+docs
+infrastructure
+*.exe
+*.test
+coverage.out

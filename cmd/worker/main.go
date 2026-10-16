@@ -18,6 +18,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"payflow/internal/banking"
+	configpkg "payflow/internal/config"
 	"payflow/internal/observability"
 	"payflow/internal/orchestration"
 	"payflow/internal/payment"
@@ -28,11 +29,6 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(logger)
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		logger.Error("DATABASE_URL is required")
-		os.Exit(1)
-	}
 	config, err := orchestration.ConfigFromEnv()
 	if err != nil {
 		logger.Error("invalid Temporal configuration", "error_category", "configuration")
@@ -72,7 +68,12 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	pool, err := pgxpool.New(ctx, url)
+	dbConfig, err := configpkg.Database()
+	if err != nil {
+		logger.Error("invalid database configuration", "error_category", "configuration")
+		os.Exit(1)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, dbConfig)
 	if err != nil {
 		logger.Error("database pool failed", "error_category", "database")
 		os.Exit(1)
@@ -131,7 +132,7 @@ func main() {
 
 	for ctx.Err() == nil {
 		connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		temporalClient, err = client.DialContext(connectCtx, client.Options{HostPort: config.Address, Namespace: config.Namespace})
+		temporalClient, err = client.DialContext(connectCtx, config.ClientOptions())
 		cancel()
 		if err == nil {
 			break

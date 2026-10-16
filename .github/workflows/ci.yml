@@ -1,0 +1,79 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_USER: payflow
+          POSTGRES_PASSWORD: payflow
+          POSTGRES_DB: payflow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U payflow -d payflow_test"
+          --health-interval 2s --health-timeout 2s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://payflow:payflow@127.0.0.1:5432/payflow_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Format
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+      - name: Build
+        run: go build ./...
+      - name: Start disposable Temporal development server
+        run: docker compose up -d --wait temporal
+      - name: Unit, PostgreSQL, and Temporal integration tests
+        env:
+          TEST_TEMPORAL_ADDRESS: 127.0.0.1:7233
+        run: go test -count=1 ./...
+      - name: Vet
+        run: go vet ./...
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: '1.73.0'
+      - name: Protobuf lint
+        run: buf lint
+      - name: Generate and compare committed code
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+          go install connectrpc.com/connect/v2/cmd/protoc-gen-connect-go@v2.0.0
+          buf generate
+          test -z "$(git status --porcelain -- gen/go)"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API image
+        run: docker build --target api -t payflow-api:ci .
+      - name: Build worker image
+        run: docker build --target worker -t payflow-worker:ci .
+      - name: Build migrator image
+        run: docker build --target migrate -t payflow-migrate:ci .
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infrastructure/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.9
+      - name: Format
+        run: terraform fmt -check -recursive
+      - name: Initialize provider without backend
+        run: terraform init -backend=false -input=false
+      - name: Validate
+        run: terraform validate
