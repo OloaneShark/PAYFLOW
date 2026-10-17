@@ -67,6 +67,7 @@ func safeRoute(path string) string {
 	case "/healthz", "/readyz",
 		"/payflow.v1.PaymentService/CreatePayment",
 		"/payflow.v1.PaymentService/GetPayment",
+		"/payflow.v1.PaymentService/SubmitPayment",
 		"/payflow.v1.PaymentService/SimulatePayment",
 		"/payflow.v1.PaymentService/ReconcilePayment",
 		"/payflow.v1.PaymentService/GetMerchantBalance":

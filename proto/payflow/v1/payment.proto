@@ -6,11 +6,12 @@ option go_package = "payflow/gen/go/payflow/v1;payflowv1";
 
 import "google/protobuf/timestamp.proto";
 
-// PaymentService creates and retrieves simulated payments. Simulation methods
-// are disabled by default and may be enabled only on a loopback development server.
+// PaymentService manages simulated payments. SubmitPayment queues server-controlled
+// mock processing. Scenario-selection methods are loopback development-only.
 service PaymentService {
   rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse);
   rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse);
+  rpc SubmitPayment(SubmitPaymentRequest) returns (SubmitPaymentResponse);
   rpc SimulatePayment(SimulatePaymentRequest) returns (SimulatePaymentResponse);
   rpc ReconcilePayment(ReconcilePaymentRequest) returns (ReconcilePaymentResponse);
   rpc GetMerchantBalance(GetMerchantBalanceRequest) returns (GetMerchantBalanceResponse);
@@ -32,6 +33,16 @@ message GetPaymentRequest {
 }
 
 message GetPaymentResponse {
+  Payment payment = 1;
+}
+
+// The authenticated merchant may submit only an owned, existing payment.
+// No provider outcome or development scenario can be chosen by the client.
+message SubmitPaymentRequest {
+  string payment_id = 1;
+}
+
+message SubmitPaymentResponse {
   Payment payment = 1;
 }
 

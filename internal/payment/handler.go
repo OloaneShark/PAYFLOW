@@ -21,11 +21,31 @@ type Handler struct {
 	Orchestrator interface {
 		Request(context.Context, string, banking.Scenario) (Payment, error)
 	}
+	Submitter interface {
+		Submit(context.Context, string) (Payment, error)
+	}
 	DevProcessingEnabled bool
 	AuthRequired         bool
 	Ledger               interface {
 		Balance(context.Context, string, string, string) (ledger.Balance, error)
 	}
+}
+
+func (h *Handler) SubmitPayment(ctx context.Context, req *paymentv1.SubmitPaymentRequest) (*paymentv1.SubmitPaymentResponse, error) {
+	if req == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "request is required")
+	}
+	if err := h.ownedPayment(ctx, req.GetPaymentId()); err != nil {
+		return nil, err
+	}
+	if h.Submitter == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, "payment submission unavailable")
+	}
+	p, err := h.Submitter.Submit(ctx, req.GetPaymentId())
+	if err != nil {
+		return nil, rpcError(err)
+	}
+	return &paymentv1.SubmitPaymentResponse{Payment: toProto(p)}, nil
 }
 
 func (h *Handler) merchant(ctx context.Context) (string, error) {

@@ -21,6 +21,7 @@ import (
 	"payflow/internal/auth"
 	"payflow/internal/ledger"
 	"payflow/internal/observability"
+	"payflow/internal/orchestration"
 	"payflow/internal/payment"
 	"payflow/internal/storage"
 )
@@ -52,7 +53,7 @@ func TestConnectHTTPMerchantAuthentication(t *testing.T) {
 	}
 	server := connect.NewServer()
 	store := &storage.Postgres{Pool: pool}
-	paymentv1connect.RegisterPaymentServiceHandler(server, &payment.Handler{Service: payment.NewService(store), Ledger: &ledger.Service{Pool: pool}, AuthRequired: true})
+	paymentv1connect.RegisterPaymentServiceHandler(server, &payment.Handler{Service: payment.NewService(store), Submitter: &orchestration.SubmissionService{Store: store}, Ledger: &ledger.Service{Pool: pool}, AuthRequired: true})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
 	api := httptest.NewServer(apiMiddleware(mux, keys, observability.New(), slog.New(slog.NewTextHandler(io.Discard, nil)), time.Second))
@@ -96,6 +97,18 @@ func TestConnectHTTPMerchantAuthentication(t *testing.T) {
 		t.Fatalf("ownership: %+v", record)
 	}
 	getBody := fmt.Sprintf(`{"paymentId":%q}`, paymentID)
+	if status, _ := call("SubmitPayment", "", getBody); status != 401 {
+		t.Fatalf("missing key on submission %d", status)
+	}
+	if status, _ := call("SubmitPayment", otherKey, getBody); status != 404 {
+		t.Fatalf("cross merchant submission %d", status)
+	}
+	if status, _ := call("SubmitPayment", key, getBody); status != 200 {
+		t.Fatalf("valid submission %d", status)
+	}
+	if status, _ := call("SubmitPayment", key, getBody); status != 200 {
+		t.Fatalf("duplicate submission %d", status)
+	}
 	if status, _ := call("GetPayment", otherKey, getBody); status != 404 {
 		t.Fatalf("cross merchant get %d", status)
 	}
@@ -112,6 +125,9 @@ func TestConnectHTTPMerchantAuthentication(t *testing.T) {
 	if status, _ := call("GetPayment", key, getBody); status != 401 {
 		t.Fatalf("rotated old key %d", status)
 	}
+	if status, _ := call("SubmitPayment", key, getBody); status != 401 {
+		t.Fatalf("rotated old key submitted %d", status)
+	}
 	if status, _ := call("GetPayment", nextKey, getBody); status != 200 {
 		t.Fatalf("rotated new key %d", status)
 	}
@@ -120,5 +136,8 @@ func TestConnectHTTPMerchantAuthentication(t *testing.T) {
 	}
 	if status, _ := call("GetPayment", nextKey, getBody); status != 401 {
 		t.Fatalf("revoked key %d", status)
+	}
+	if status, _ := call("SubmitPayment", nextKey, getBody); status != 401 {
+		t.Fatalf("revoked key submitted %d", status)
 	}
 }

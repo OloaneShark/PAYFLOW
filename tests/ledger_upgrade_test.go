@@ -117,7 +117,7 @@ func TestPhase3UpgradeBackfillsExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestPhase4UpgradeToMerchantCredentialsPreservesPaymentAndJournal(t *testing.T) {
+func TestPhase4UpgradeThroughPrivateAdministrationPreservesPaymentJournalAndKey(t *testing.T) {
 	pool := phase3Schema(t)
 	applyMigrationFile(t, pool, "004_double_entry_ledger.up.sql")
 	ctx := context.Background()
@@ -142,8 +142,12 @@ func TestPhase4UpgradeToMerchantCredentialsPreservesPaymentAndJournal(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyMigrationFile(t, pool, "006_private_administration.up.sql")
 	if merchant, err := keys.Authenticate(ctx, key); err != nil || merchant != created.MerchantID {
 		t.Fatalf("upgraded auth: %q %v", merchant, err)
+	}
+	if journalCount(t, pool, created.ID) != 1 {
+		t.Fatal("private administration migration lost approval journal")
 	}
 }
 

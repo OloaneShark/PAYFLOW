@@ -29,6 +29,9 @@ const (
 	PaymentServiceCreatePaymentProcedure = "/payflow.v1.PaymentService/CreatePayment"
 	// PaymentServiceGetPaymentProcedure is the procedure name of the PaymentService's GetPayment RPC.
 	PaymentServiceGetPaymentProcedure = "/payflow.v1.PaymentService/GetPayment"
+	// PaymentServiceSubmitPaymentProcedure is the procedure name of the PaymentService's SubmitPayment
+	// RPC.
+	PaymentServiceSubmitPaymentProcedure = "/payflow.v1.PaymentService/SubmitPayment"
 	// PaymentServiceSimulatePaymentProcedure is the procedure name of the PaymentService's
 	// SimulatePayment RPC.
 	PaymentServiceSimulatePaymentProcedure = "/payflow.v1.PaymentService/SimulatePayment"
@@ -53,6 +56,13 @@ var (
 			StreamType: connect.StreamTypeUnary,
 			Schema:     v1.File_payflow_v1_payment_proto.Services().ByName("PaymentService").Methods().ByName("GetPayment"),
 			Procedure:  PaymentServiceGetPaymentProcedure,
+		}
+	})
+	paymentServiceSubmitPaymentSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_payflow_v1_payment_proto.Services().ByName("PaymentService").Methods().ByName("SubmitPayment"),
+			Procedure:  PaymentServiceSubmitPaymentProcedure,
 		}
 	})
 	paymentServiceSimulatePaymentSpec = sync.OnceValue(func() connect.Spec {
@@ -82,6 +92,7 @@ var (
 type PaymentServiceClient interface {
 	CreatePayment(context.Context, *v1.CreatePaymentRequest) (*v1.CreatePaymentResponse, error)
 	GetPayment(context.Context, *v1.GetPaymentRequest) (*v1.GetPaymentResponse, error)
+	SubmitPayment(context.Context, *v1.SubmitPaymentRequest) (*v1.SubmitPaymentResponse, error)
 	SimulatePayment(context.Context, *v1.SimulatePaymentRequest) (*v1.SimulatePaymentResponse, error)
 	ReconcilePayment(context.Context, *v1.ReconcilePaymentRequest) (*v1.ReconcilePaymentResponse, error)
 	GetMerchantBalance(context.Context, *v1.GetMerchantBalanceRequest) (*v1.GetMerchantBalanceResponse, error)
@@ -97,6 +108,7 @@ func NewPaymentServiceClient(client *connect.Client) PaymentServiceClient {
 type PaymentServiceHandler interface {
 	CreatePayment(context.Context, *v1.CreatePaymentRequest) (*v1.CreatePaymentResponse, error)
 	GetPayment(context.Context, *v1.GetPaymentRequest) (*v1.GetPaymentResponse, error)
+	SubmitPayment(context.Context, *v1.SubmitPaymentRequest) (*v1.SubmitPaymentResponse, error)
 	SimulatePayment(context.Context, *v1.SimulatePaymentRequest) (*v1.SimulatePaymentResponse, error)
 	ReconcilePayment(context.Context, *v1.ReconcilePaymentRequest) (*v1.ReconcilePaymentResponse, error)
 	GetMerchantBalance(context.Context, *v1.GetMerchantBalanceRequest) (*v1.GetMerchantBalanceResponse, error)
@@ -109,6 +121,7 @@ func RegisterPaymentServiceHandler(server *connect.Server, svc PaymentServiceHan
 	server.Register(
 		connect.Method{Spec: paymentServiceCreatePaymentSpec(), Handler: adapter.createPayment},
 		connect.Method{Spec: paymentServiceGetPaymentSpec(), Handler: adapter.getPayment},
+		connect.Method{Spec: paymentServiceSubmitPaymentSpec(), Handler: adapter.submitPayment},
 		connect.Method{Spec: paymentServiceSimulatePaymentSpec(), Handler: adapter.simulatePayment},
 		connect.Method{Spec: paymentServiceReconcilePaymentSpec(), Handler: adapter.reconcilePayment},
 		connect.Method{Spec: paymentServiceGetMerchantBalanceSpec(), Handler: adapter.getMerchantBalance},
@@ -124,6 +137,10 @@ func (UnimplementedPaymentServiceHandler) CreatePayment(context.Context, *v1.Cre
 
 func (UnimplementedPaymentServiceHandler) GetPayment(context.Context, *v1.GetPaymentRequest) (*v1.GetPaymentResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "payflow.v1.PaymentService.GetPayment is not implemented")
+}
+
+func (UnimplementedPaymentServiceHandler) SubmitPayment(context.Context, *v1.SubmitPaymentRequest) (*v1.SubmitPaymentResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "payflow.v1.PaymentService.SubmitPayment is not implemented")
 }
 
 func (UnimplementedPaymentServiceHandler) SimulatePayment(context.Context, *v1.SimulatePaymentRequest) (*v1.SimulatePaymentResponse, error) {
@@ -153,6 +170,14 @@ func (c *paymentServiceClient) CreatePayment(ctx context.Context, req *v1.Create
 func (c *paymentServiceClient) GetPayment(ctx context.Context, req *v1.GetPaymentRequest) (*v1.GetPaymentResponse, error) {
 	var res v1.GetPaymentResponse
 	if err := c.client.CallUnary(ctx, paymentServiceGetPaymentSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *paymentServiceClient) SubmitPayment(ctx context.Context, req *v1.SubmitPaymentRequest) (*v1.SubmitPaymentResponse, error) {
+	var res v1.SubmitPaymentResponse
+	if err := c.client.CallUnary(ctx, paymentServiceSubmitPaymentSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -202,6 +227,18 @@ func (h paymentServiceHandler) getPayment(ctx context.Context, _ connect.Spec, s
 		return err
 	}
 	res, err := h.svc.GetPayment(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h paymentServiceHandler) submitPayment(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SubmitPaymentRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SubmitPayment(ctx, &req)
 	if err != nil {
 		return err
 	}

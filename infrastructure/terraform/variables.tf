@@ -54,6 +54,12 @@ variable "migrations_complete" {
   description = "Set true only after the one-off migration task has succeeded and historical backfill has been reviewed."
 }
 
+variable "deployment_prerequisites_reviewed" {
+  type        = bool
+  default     = false
+  description = "Manual attestation that private routing, secrets, Temporal Cloud, merchant credentials, image digests, migrations, backfill, and health checks have been reviewed. Terraform cannot verify external systems."
+}
+
 variable "temporal_address" {
   type    = string
   default = ""
@@ -96,6 +102,45 @@ variable "migrate_image_digest" {
   validation {
     condition     = !var.enable_runtime || can(regex("^sha256:[a-f0-9]{64}$", var.migrate_image_digest))
     error_message = "Pin the migrator image by SHA-256 digest."
+  }
+}
+
+variable "enable_admin" {
+  type        = bool
+  default     = false
+  description = "Register the private one-off administrator task after its recipient and invoker roles are approved."
+  validation {
+    condition     = !var.enable_admin || var.enable_runtime
+    error_message = "Administration requires runtime task definitions to be enabled."
+  }
+}
+
+variable "admin_image_digest" {
+  type    = string
+  default = ""
+  validation {
+    condition     = !var.enable_admin || can(regex("^sha256:[a-f0-9]{64}$", var.admin_image_digest))
+    error_message = "Pin the administrator image by SHA-256 digest."
+  }
+}
+
+variable "credential_recipient_role_name" {
+  type        = string
+  default     = ""
+  description = "Existing IAM role for the approved credential broker; Terraform grants it read access only to PAYFLOW merchant-key secrets."
+  validation {
+    condition     = !var.enable_admin || var.credential_recipient_role_name != ""
+    error_message = "Supply an approved existing credential recipient role when enabling administration."
+  }
+}
+
+variable "admin_invoker_role_name" {
+  type        = string
+  default     = ""
+  description = "Existing IAM role for authorized administrators to invoke only the private admin task."
+  validation {
+    condition     = !var.enable_admin || var.admin_invoker_role_name != ""
+    error_message = "Supply an approved existing admin invoker role when enabling administration."
   }
 }
 

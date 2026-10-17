@@ -60,6 +60,8 @@ jobs:
         run: docker build --target worker -t payflow-worker:ci .
       - name: Build migrator image
         run: docker build --target migrate -t payflow-migrate:ci .
+      - name: Build private administrator image
+        run: docker build --target admin -t payflow-admin:ci .
 
   terraform:
     runs-on: ubuntu-latest

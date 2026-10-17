@@ -1,53 +1,53 @@
-# AWS deployment architecture (Phase 6)
+# Private AWS simulation architecture (Phase 7)
 
-This is a **simulation** deployment design. It does not transfer funds or connect to a bank. Terraform is a proposed deployment configuration; this repository has not provisioned an AWS account.
+This is a proposed deployment of a **simulated** payment system. No funds move, no banking service is called, and this repository has not provisioned AWS resources.
 
 ```mermaid
 flowchart LR
-  VPN[Approved VPN or private network] --> ALB[Internal HTTPS ALB]
-  ALB --> API[ECS Fargate API]
-  API --> RDS[(Private RDS PostgreSQL)]
-  WORKER[ECS Fargate worker] --> RDS
-  WORKER -->|TLS 7233 + API key| TEMPORAL[Temporal Cloud namespace]
-  MIGRATE[One-off ECS migrator] --> RDS
-  SECRETS[Secrets Manager] --> API
-  SECRETS --> WORKER
-  SECRETS --> MIGRATE
-  API --> LOGS[CloudWatch Logs]
-  WORKER --> LOGS
-  MIGRATE --> LOGS
+  CLIENT[Approved private client network] --> ALB[Internal HTTPS ALB]
+  ALB --> API[ECS API]
+  API -->|authenticated SubmitPayment| DB[(Private RDS PostgreSQL)]
+  DB -->|pending dispatch| WORKER[ECS worker]
+  WORKER -->|TLS and API key| TEMPORAL[Temporal Cloud]
+  WORKER --> DB
+  ADMIN[One-off private ECS admin task] --> DB
+  ADMIN -->|CreateSecret only| KEYS[Merchant key secrets]
+  BROKER[Approved credential broker role] -->|GetSecretValue| KEYS
+  MIGRATE[One-off migrator] --> DB
+  STARTUP[Startup Secrets Manager secrets] --> API
+  STARTUP --> WORKER
+  STARTUP --> ADMIN
+  STARTUP --> MIGRATE
 ```
 
 ## Network and trust boundaries
 
-Terraform creates one VPC across two availability zones, with public NAT subnets, private application subnets, and isolated database subnets. The only Internet Gateway route belongs to NAT subnets. Each private application subnet routes outbound traffic through a NAT gateway in the same zone for ECR layers, CloudWatch Logs, Secrets Manager, and Temporal Cloud. The database subnets have no default route. API, worker, and migration tasks have no public IP. RDS is not publicly accessible. There is no public ALB.
+Terraform creates one VPC in two availability zones, public NAT subnets, private application subnets, and isolated database subnets. Only NAT subnets have an Internet Gateway route. API, worker, migrator, and admin tasks have no public IP; RDS is private. Worker and admin tasks have no load balancer listener. The internal HTTPS ALB accepts port 443 only from `private_client_cidr`; a VPN, Direct Connect, or equivalent routed private client path and matching private DNS and ACM certificate must be supplied separately. The CIDR rule does not create that route or authenticate clients. The API accepts port 8080 only from the ALB. Every merchant RPC requires a bearer credential; `/readyz` and `/healthz` remain internal health probes.
 
-The internal ALB has an HTTPS listener using a pre-existing ACM certificate. Its security group accepts port 443 only from `private_client_cidr`; the API accepts port 8080 only from the ALB. **A routed VPN, Direct Connect, or equivalent approved private client path must exist outside this Terraform module.** A CIDR rule by itself creates no client connectivity or authentication. The certificate must match the private hostname used by clients; the generated AWS ALB DNS name will generally not match your certificate. ConnectRPC merchant bearer authentication remains mandatory. Health probes are unauthenticated within the ALB/API trust boundary.
+Application tasks reach RDS on 5432 through security group rules. Private task subnets use NAT for ECR, CloudWatch, Secrets Manager, and Temporal Cloud; the database subnets have no default route. The worker uses outbound 7233 to Temporal Cloud. Task outbound 443 currently permits broad destinations through NAT, so an environment requiring stricter egress needs reviewed endpoints or a firewall. Local metrics listeners bind loopback within containers and have no ALB route.
 
-The worker and migration task have no ALB listener. API, worker, and migration tasks can reach RDS only on 5432. Worker outbound 7233 reaches Temporal Cloud; all task types have outbound 443 for Fargate bootstrap and AWS service access. Security groups and private routing form a baseline; NAT egress is broad by destination and should be narrowed with approved endpoints or an egress firewall if the environment requires it.
+## Merchant submission and durable processing
 
-## Data, secrets, and identities
+`CreatePayment` stores an authenticated merchant's payment and does not process it. `SubmitPayment` checks the merchant owns the ID, chooses an approve or decline **mock** scenario using a stable hash of the server-generated payment UUID, and commits one `payment_workflow_dispatch` row. The API does not connect to Temporal for this call. The worker scans pending rows, starts `payflow-payment-<payment ID>`, and retries after failures or restarts. Concurrent submissions use the same row and workflow ID. `GetPayment` exposes eventual progress; a successful submission response may still show `CREATED`.
 
-RDS PostgreSQL 17.6 uses encrypted gp3 storage, Multi-AZ, automated backups, deletion protection, a final snapshot, an isolated subnet group, and a parameter group with `rds.force_ssl=1`. The Terraform-managed RDS master password is an AWS managed Secrets Manager value. The application must use a **separate least-privilege database user**, created through an approved private database administration path. The application URL secret must include the RDS DNS hostname, `sslmode=verify-full`, and `sslrootcert=/etc/ssl/certs/rds-global-bundle.pem`. The CA bundle is copied into every container. API, worker, and migrator reject a production URL lacking hostname-verified TLS.
+The workflow invokes the existing idempotent processor. A payment is claimed before a provider call, with a stable operation ID and a lease; the database transaction ends before the call. The durable mock provider stores one decision per operation ID. Confirmed approval commits one balanced journal and `COMPLETED`; confirmed decline commits `FAILED`. A timeout or lost response becomes `RECONCILIATION_REQUIRED` until the original operation can be checked. Retrying a workflow, worker, or provider call never allocates a second logical operation for the same payment. An unknown outcome is never guessed. The mock outcome policy is only for demonstration, not risk assessment or real banking.
 
-Terraform creates three Secrets Manager secret containers without secret versions: a runtime `DATABASE_URL`, a migration `DATABASE_URL`, and a Temporal Cloud API key. The database URLs should use distinct roles: runtime data access for API/worker, schema ownership and migration privileges for the one-off migrator. Values are installed outside Terraform so they do not enter Terraform state. ECS execution roles can read only their respective secrets, pull their own ECR image, and write their own CloudWatch log group. Application task roles have no AWS permissions. Rotating a secret requires starting fresh tasks because ECS injects values at task startup.
+Production sets `PAYFLOW_ENABLE_DEV_PROCESSING=false`. `SimulatePayment` and `ReconcilePayment` remain disabled on the private ALB. The production `SubmitPayment` request has no scenario selector. There is no public operator or credential endpoint.
 
-The worker connects to an independently provisioned Temporal Cloud namespace using the SDK's API key credentials and verified TLS. Production rejects local/default Temporal settings and a missing key. The API does not connect to Temporal when development simulation is disabled. Temporal Cloud setup, API key lifecycle, and account limits are external prerequisites.
+## Database, credentials, and IAM
 
-Temporal Cloud also supports mutual TLS credentials. This module chooses API keys to keep ECS secret rotation straightforward; an mTLS variant would need a separate reviewed certificate/key delivery and rotation design and is not configured here.
+RDS PostgreSQL uses encrypted storage, Multi-AZ, backups, deletion protection, a final snapshot, and `rds.force_ssl=1`. Each database URL must use the RDS DNS name, `sslmode=verify-full`, and the bundled RDS CA at `/etc/ssl/certs/rds-global-bundle.pem`. The runtime, migration, and administration URLs are distinct Secrets Manager secret containers populated outside Terraform. Use distinct database roles: runtime DML, migration schema ownership and DDL, and administration limited to the credential tables plus required recovery and ledger functions/tables. These SQL grants and role creation are an external prerequisite; Terraform cannot prove them.
 
-## Service lifecycle and visibility
+ECS execution roles read only their respective startup secret, image, and log group. API, worker, and migrator task roles have no AWS permissions. The one-off admin task role can **create** secrets only under the PAYFLOW merchant-key prefix; it cannot retrieve them. New credentials are 256-bit random values. Migration 006 adds an inactive key state and durable request-ID audit. The admin task first commits the new hash as inactive, creates a uniquely named Secrets Manager secret, then activates the key. Rotation revokes the old key only in the same database transaction that activates the delivered replacement. A failed or uncertain secret creation leaves the new key inactive and the old key usable; its audit state requires private review. The task emits only IDs, states, and secret ARNs, never raw keys. Repeated request IDs do not generate another active key.
 
-The first Terraform stage creates network, RDS, ECR, ALB, IAM, logs, and secret containers. `enable_runtime=false` keeps task definitions and services absent until images, credentials, and Temporal Cloud are prepared. The second stage creates pinned image task definitions and zero-count services. A one-off migration task runs before any API or worker task is scaled. The `migrations_complete` variable guards a nonzero desired count. An upgraded Phase 1–3 database may need the separate, approval-verified historical ledger backfill described in [deployment](deployment.md).
+The approved, pre-existing credential broker role receives `GetSecretValue` and `DescribeSecret` for PAYFLOW merchant-key secrets. That role must deliver a credential over an approved channel; its trust policy, access approval, and actual delivery mechanism are outside this repository. An approved, pre-existing invoker role receives permission to run only the admin task on this cluster and to pass only its task and execution roles. Its MFA, trust policy, and approval flow remain account responsibilities. ECS invocation and Secrets Manager access must be reviewed in CloudTrail. The task definition sets a generic actor label; CloudTrail identifies the actual invoker. No key is passed in ECS command arguments, task output, or Terraform state. Secrets remain accessible to account principals with broader IAM authority, so the AWS account boundary must be managed accordingly.
 
-API readiness checks PostgreSQL. Worker readiness checks PostgreSQL and Temporal after its poller starts. ECS health checks and ALB target health use `/readyz`. JSON application logs flow to CloudWatch with configurable retention, and CloudWatch alarms cover RDS storage/CPU, API target availability, and worker CPU. No alarm notification destination is configured. Existing `/metrics` endpoints remain loopback-only within the task and are **not** exposed by the ALB; private metrics collection and alert routing are future integration work. Correlation IDs and bounded metric labels remain as in [architecture](architecture.md).
+The same admin task has a fixed command allowlist for audited recovery, backfill, and inspection. Mutations require `--confirm`. It cannot execute arbitrary shell input and has no listener. The existing loopback-only local credential and operator CLIs remain local.
 
-The production API binds `0.0.0.0:8080` behind the private ALB. `PAYFLOW_ENABLE_DEV_PROCESSING=false`; the `SimulatePayment` and `ReconcilePayment` methods remain disabled in production. The current production API supports authenticated creation, retrieval, and balance queries. A safe, separately authorized processing trigger for newly created payments is **not implemented** here. Existing workflows and recovery records can be handled by the worker. No public/admin/metrics/simulation endpoint is added.
+## Rollout gates and visibility
 
-## Remaining production boundaries
+With `enable_runtime=false`, Terraform creates infrastructure and empty startup secret containers without running services. Image digests and secret values are provided through separately approved procedures. With `enable_runtime=true`, task definitions and zero-count services are registered. `enable_admin=true` registers the private admin task once approved recipient and invoker roles are supplied. Scale-out is guarded by `migrations_complete`, `deployment_prerequisites_reviewed`, and `enable_admin`; these are manual attestations, not proof that external systems work. Run the one-off migrator and any provider-verified historical ledger backfill before service scale-out. See [deployment](deployment.md) for the review checklist and PowerShell commands.
 
-- No remote credential-provisioning or backfill command is supplied. The current CLIs deliberately require a loopback database; do not weaken that check for deployment. Provision merchant keys and perform verified historical backfill through a reviewed private administration workflow before accepting production requests.
-- This module does not create a VPN, private DNS record, ACM certificate, S3 state bucket, Temporal Cloud namespace, or notification routing. They are prerequisites or later work.
-- The mock provider and ledger are still simulated data. RDS and Temporal Cloud costs accrue if deployed even when ECS desired counts are zero.
+API readiness checks PostgreSQL. Worker readiness checks PostgreSQL and Temporal after its poller starts. Application JSON logs use separate CloudWatch groups; CloudWatch alarms cover basic RDS and service health, but no notification destination is configured. Secrets injected into ECS are refreshed only when tasks restart. The admin task itself is not long-running.
 
-AWS references: [Fargate task networking](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/fargate-task-networking.html), [private task outbound routing](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/networking-outbound.html), [ECS secret injection](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/specifying-sensitive-data-tutorial.html), [RDS PostgreSQL TLS](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.SSL.html), [Temporal Cloud authentication](https://docs.temporal.io/cloud/get-started).
+AWS references: [ECS task roles](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html), [Secrets Manager CreateSecret](https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_CreateSecret.html), [RDS PostgreSQL TLS](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.SSL.html), [Temporal Cloud setup](https://docs.temporal.io/cloud/get-started).

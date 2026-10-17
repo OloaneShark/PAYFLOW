@@ -63,7 +63,7 @@ func (s *Store) Authenticate(ctx context.Context, key string) (string, error) {
 	}
 	digest := sha256.Sum256([]byte(key))
 	var merchant string
-	err := s.Pool.QueryRow(ctx, `SELECT merchant_id FROM merchant_api_keys WHERE key_hash=$1 AND revoked_at IS NULL`, digest[:]).Scan(&merchant)
+	err := s.Pool.QueryRow(ctx, `SELECT merchant_id FROM merchant_api_keys WHERE key_hash=$1 AND revoked_at IS NULL AND activated_at IS NOT NULL`, digest[:]).Scan(&merchant)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrUnauthenticated
 	}

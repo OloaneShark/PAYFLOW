@@ -117,6 +117,11 @@ resource "aws_security_group" "migrate" {
   vpc_id      = aws_vpc.main.id
 }
 
+resource "aws_security_group" "admin" {
+  name_prefix = "${local.name}-admin-"
+  vpc_id      = aws_vpc.main.id
+}
+
 resource "aws_security_group" "database" {
   name_prefix = "${local.name}-db-"
   vpc_id      = aws_vpc.main.id
@@ -147,7 +152,7 @@ resource "aws_vpc_security_group_ingress_rule" "api_alb" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "db_clients" {
-  for_each                     = { api = aws_security_group.api.id, worker = aws_security_group.worker.id, migrate = aws_security_group.migrate.id }
+  for_each                     = { api = aws_security_group.api.id, worker = aws_security_group.worker.id, migrate = aws_security_group.migrate.id, admin = aws_security_group.admin.id }
   security_group_id            = aws_security_group.database.id
   referenced_security_group_id = each.value
   ip_protocol                  = "tcp"
@@ -156,7 +161,7 @@ resource "aws_vpc_security_group_ingress_rule" "db_clients" {
 }
 
 resource "aws_vpc_security_group_egress_rule" "client_db" {
-  for_each                     = { api = aws_security_group.api.id, worker = aws_security_group.worker.id, migrate = aws_security_group.migrate.id }
+  for_each                     = { api = aws_security_group.api.id, worker = aws_security_group.worker.id, migrate = aws_security_group.migrate.id, admin = aws_security_group.admin.id }
   security_group_id            = each.value
   referenced_security_group_id = aws_security_group.database.id
   ip_protocol                  = "tcp"
@@ -166,7 +171,7 @@ resource "aws_vpc_security_group_egress_rule" "client_db" {
 
 # Fargate bootstrap uses ECR, CloudWatch Logs and Secrets Manager over TLS.
 resource "aws_vpc_security_group_egress_rule" "client_https" {
-  for_each          = { api = aws_security_group.api.id, worker = aws_security_group.worker.id, migrate = aws_security_group.migrate.id }
+  for_each          = { api = aws_security_group.api.id, worker = aws_security_group.worker.id, migrate = aws_security_group.migrate.id, admin = aws_security_group.admin.id }
   security_group_id = each.value
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "tcp"

@@ -100,7 +100,7 @@ func main() {
 		temporalConfig = &config
 	}
 	server := connect.NewServer()
-	paymentv1connect.RegisterPaymentServiceHandler(server, &payment.Handler{Service: service, Processor: processor, Orchestrator: coordinator, DevProcessingEnabled: devProcessing, AuthRequired: true, Ledger: &ledger.Service{Pool: pool}})
+	paymentv1connect.RegisterPaymentServiceHandler(server, &payment.Handler{Service: service, Processor: processor, Orchestrator: coordinator, Submitter: &orchestration.SubmissionService{Store: store}, DevProcessingEnabled: devProcessing, AuthRequired: true, Ledger: &ledger.Service{Pool: pool}})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
 	mux.HandleFunc("/healthz", observability.Liveness)

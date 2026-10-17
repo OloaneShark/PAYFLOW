@@ -7,21 +7,24 @@ resource "aws_ecs_cluster" "main" {
 }
 
 locals {
-  task_names = toset(["api", "worker", "migrate"])
+  task_names = toset(["api", "worker", "migrate", "admin"])
   repository_arns = {
     api     = aws_ecr_repository.api.arn
     worker  = aws_ecr_repository.worker.arn
     migrate = aws_ecr_repository.migrate.arn
+    admin   = aws_ecr_repository.admin.arn
   }
   log_group_arns = {
     api     = aws_cloudwatch_log_group.api.arn
     worker  = aws_cloudwatch_log_group.worker.arn
     migrate = aws_cloudwatch_log_group.migrate.arn
+    admin   = aws_cloudwatch_log_group.admin.arn
   }
   task_secrets = {
     api     = [aws_secretsmanager_secret.database_runtime_url.arn]
     worker  = [aws_secretsmanager_secret.database_runtime_url.arn, aws_secretsmanager_secret.temporal_api_key.arn]
     migrate = [aws_secretsmanager_secret.database_migration_url.arn]
+    admin   = [aws_secretsmanager_secret.database_admin_url.arn]
   }
 }
 
@@ -175,8 +178,8 @@ resource "aws_ecs_service" "api" {
   depends_on = [aws_lb_listener.https]
   lifecycle {
     precondition {
-      condition     = var.api_desired_count == 0 || var.migrations_complete
-      error_message = "Run the one-off migration and review any required backfill before scaling the API."
+      condition     = var.api_desired_count == 0 || (var.migrations_complete && var.deployment_prerequisites_reviewed && var.enable_admin)
+      error_message = "Migration, external deployment prerequisites, and private administration must be reviewed before scaling the API."
     }
   }
 }
@@ -195,8 +198,8 @@ resource "aws_ecs_service" "worker" {
   }
   lifecycle {
     precondition {
-      condition     = var.worker_desired_count == 0 || var.migrations_complete
-      error_message = "Run the one-off migration and review any required backfill before scaling the worker."
+      condition     = var.worker_desired_count == 0 || (var.migrations_complete && var.deployment_prerequisites_reviewed && var.enable_admin)
+      error_message = "Migration, external deployment prerequisites, and private administration must be reviewed before scaling the worker."
     }
   }
 }

@@ -2,11 +2,11 @@
 
 PAYFLOW is a simulated payment backend written in Go. It stores JPY-denominated payment requests in PostgreSQL and orchestrates a durable mock banking provider through Temporal. It does not move money or contact banks.
 
-## AWS readiness (Phase 6)
+## AWS readiness (Phases 6–7)
 
-The repository now includes three multi-stage Linux container targets (`api`, `worker`, `migrate`), a production configuration for RDS hostname-verified TLS and Temporal Cloud API-key TLS, and Terraform for a private AWS ECS Fargate deployment. Terraform defines private API/worker tasks, isolated RDS, an internal HTTPS ALB, ECR, Secrets Manager secret containers, IAM roles, CloudWatch logs and basic alarms. Services begin at zero desired tasks until migrations and historical backfill are reviewed. The local Docker Compose workflow below remains the development environment.
+The repository now includes four multi-stage Linux container targets (`api`, `worker`, `migrate`, `admin`), a production configuration for RDS hostname-verified TLS and Temporal Cloud API-key TLS, and Terraform for a private AWS ECS Fargate deployment. Terraform defines private API/worker tasks, a one-off administrator task, isolated RDS, an internal HTTPS ALB, ECR, Secrets Manager secret containers, IAM roles, CloudWatch logs and basic alarms. Services begin at zero desired tasks until migrations and deployment prerequisites are reviewed. The local Docker Compose workflow below remains the development environment.
 
-**No AWS resources are provisioned by this repository or CI.** Deployment requires an approved private client route, certificate, remote Terraform state, Temporal Cloud namespace, application database user, and a private administration path for credentials and backfill. The existing local-only administration commands intentionally cannot be run against RDS. Production disables the simulation methods and retains merchant bearer authentication; the current production API supports Create/Get/Balance while a separately authorized processing trigger remains future work.
+**No AWS resources are provisioned by this repository or CI.** Deployment requires an approved private client route, certificate, remote Terraform state, Temporal Cloud namespace, separate database roles, populated secrets, and authorized IAM roles for private administration and credential retrieval. The existing local-only administration commands intentionally cannot be run against RDS. Production disables development scenario selection while retaining merchant bearer authentication; authenticated `SubmitPayment` queues the server-controlled mock workflow.
 
 See [AWS architecture](docs/aws-architecture.md), [PowerShell deployment runbook](docs/deployment.md), and [cost categories](docs/costs.md). These documents describe prerequisites, staging, validation, teardown, and limits. No real banking integration is included.
 
@@ -17,12 +17,15 @@ See [AWS architecture](docs/aws-architecture.md), [PowerShell deployment runbook
 - `RECONCILIATION_REQUIRED` can be claimed for reconciliation and return to `PROCESSING`. Reconciliation queries the durable provider record, then retries only with the same operation ID when the result is still unknown.
 - Repeating the same merchant/key and amount/currency returns the original payment, including its current status. Reusing the key with a changed valid payload, such as a different amount, returns `ALREADY_EXISTS`. Unsupported currencies are rejected as `INVALID_ARGUMENT` before idempotency lookup.
 - `GetPayment` looks up an owned payment by UUID. Missing or other merchants' IDs return `NOT_FOUND`; malformed IDs return `INVALID_ARGUMENT`.
+- `SubmitPayment` accepts an existing owned payment ID and commits one durable workflow request. The worker dispatches it to Temporal; the response can still show `CREATED`. The merchant cannot choose an outcome. A stable rule over the server-generated payment UUID selects mock approval for about 80% of IDs and mock decline for about 20%; this is a simulation policy, not a risk or banking decision. Poll `GetPayment` for the outcome. Duplicate submissions reuse the same workflow ID and provider operation.
 - `SimulatePayment` and `ReconcilePayment` are **development-only** operations. They are disabled by default and require a loopback listening address. Do not expose this API on a public interface. `SimulatePayment` persists a workflow request and returns the current payment; processing is asynchronous. `ReconcilePayment` remains an immediate manual recovery operation.
 - All operations are simulated records only. There is no settlement, refund, or external provider.
 
 ## Merchant credentials and isolation
 
 Every ConnectRPC request requires `Authorization: Bearer pfk_...`. A credential belongs to one merchant. Keys contain 256 random bits; migration 005 stores only their SHA-256 hashes. `CreatePayment` derives the merchant from the key. Its legacy `merchant_id` field may be omitted; a mismatched value returns `PERMISSION_DENIED`. Payment lookup, simulation, and reconciliation hide other merchants' payments as `NOT_FOUND`. `GetMerchantBalance` returns only the authenticated merchant's JPY payable balance. Workers and the local operator use internal database access and are not HTTP merchant endpoints.
+
+Private deployment administration uses the one-off `admin` ECS task, never an HTTP endpoint. Migration 006 keeps new keys inactive until the task writes each key to a unique Secrets Manager secret. The approved credential broker role retrieves the value; task logs and command arguments contain no key material. Rotation revokes the previous key only after delivery succeeds. Uncertain delivery leaves the new key inactive and requires private review. See [the deployment runbook](docs/deployment.md).
 
 Provision, rotate, and revoke keys with the loopback-only local command. It prints each new secret once; keep the output out of source control and logs:
 
@@ -56,6 +59,8 @@ Go 1.27.2, PostgreSQL 17.6 (Compose image), Temporal development server image `t
 
 Phase 6 also uses Terraform CLI 1.14.9 and pins the AWS provider to 6.64.0 with a committed lock file. The Dockerfile pins the Go 1.27.2 Bookworm builder and distroless Debian 12 non-root runtime by image digest. The checked-in RDS global CA bundle is a public trust anchor, not a credential.
 
+Phase 7 uses AWS SDK for Go v2 modules `config` v1.33.9 and `secretsmanager` v1.50.3 for private, in-process secret delivery.
+
 ## Local setup (Windows PowerShell)
 
 Install Go and Buf, and start Docker Desktop. From the repository root:
@@ -69,7 +74,6 @@ go run ./cmd/operator issues
 go run ./cmd/operator backfill --confirm
 $keyOutput = go run ./cmd/credentials issue demo-merchant
 $apiKey = ($keyOutput | Where-Object { $_ -like 'api_key=*' }) -replace '^api_key=', ''
-$apiKey # Copy this once into your separate API client shell; do not commit it.
 $env:PAYFLOW_ENABLE_DEV_PROCESSING = 'true'
 go run ./cmd/api
 ```
@@ -93,6 +97,7 @@ $headers = @{ Authorization = 'Bearer <api_key from provisioning output>' }
 Invoke-RestMethod -Uri 'http://127.0.0.1:8080/payflow.v1.PaymentService/CreatePayment' -Method Post -ContentType 'application/json' -Headers $headers -Body $body
 $id = '<paymentId from the response>'
 Invoke-RestMethod -Uri 'http://127.0.0.1:8080/payflow.v1.PaymentService/GetPayment' -Method Post -ContentType 'application/json' -Headers $headers -Body "{`"paymentId`":`"$id`"}"
+Invoke-RestMethod -Uri 'http://127.0.0.1:8080/payflow.v1.PaymentService/SubmitPayment' -Method Post -ContentType 'application/json' -Headers $headers -Body "{`"paymentId`":`"$id`"}"
 ```
 
 Protobuf JSON represents `int64` values as strings, so `"amount":"1200"` is intentional.
@@ -214,6 +219,7 @@ The checked-in `buf.gen.yaml` uses local plugins to avoid depending on a hosted 
 | `cmd/worker` | Temporal worker and pending dispatch scanner |
 | `cmd/operator` | Local inspection, backfill, and audited recovery |
 | `cmd/credentials` | Local merchant key provisioning, rotation, and revocation |
+| `cmd/admin` | Private one-off ECS administration; no public listener or credential output |
 | `cmd/migrate` | Embedded SQL migration runner |
 | `cmd/healthcheck` | Loopback HTTP readiness probe used by containers |
 | `internal/config` | Shared database configuration and production TLS requirements |
@@ -226,6 +232,7 @@ The checked-in `buf.gen.yaml` uses local plugins to avoid depending on a hosted 
 | `internal/ledger` | Transactional approval posting and read-only ledger queries |
 | `internal/operator` | Local recovery and audit service |
 | `internal/auth` | Hashed merchant credentials and identity context |
+| `internal/admin` | Audited private credential lifecycle and Secrets Manager delivery |
 | `internal/recovery` | Expired-claim and unresolved-outcome scanner |
 | `internal/observability` | Structured correlation context and bounded metrics |
 | `proto/payflow/v1` | Protobuf API contract |

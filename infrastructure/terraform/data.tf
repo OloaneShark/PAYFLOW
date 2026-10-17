@@ -53,6 +53,11 @@ resource "aws_secretsmanager_secret" "database_migration_url" {
   recovery_window_in_days = 30
 }
 
+resource "aws_secretsmanager_secret" "database_admin_url" {
+  name                    = "${local.name}/database-admin-url"
+  recovery_window_in_days = 30
+}
+
 resource "aws_secretsmanager_secret" "temporal_api_key" {
   name                    = "${local.name}/temporal-api-key"
   recovery_window_in_days = 30
@@ -79,6 +84,13 @@ resource "aws_ecr_repository" "migrate" {
   encryption_configuration { encryption_type = "AES256" }
 }
 
+resource "aws_ecr_repository" "admin" {
+  name                 = "${local.name}/admin"
+  image_tag_mutability = "IMMUTABLE"
+  image_scanning_configuration { scan_on_push = true }
+  encryption_configuration { encryption_type = "AES256" }
+}
+
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/ecs/${local.name}/api"
   retention_in_days = var.log_retention_days
@@ -91,6 +103,11 @@ resource "aws_cloudwatch_log_group" "worker" {
 
 resource "aws_cloudwatch_log_group" "migrate" {
   name              = "/ecs/${local.name}/migrate"
+  retention_in_days = var.log_retention_days
+}
+
+resource "aws_cloudwatch_log_group" "admin" {
+  name              = "/ecs/${local.name}/admin"
   retention_in_days = var.log_retention_days
 }
 
@@ -140,13 +157,13 @@ output "database_address" {
 }
 
 output "secret_arns" {
-  value = { database_runtime_url = aws_secretsmanager_secret.database_runtime_url.arn, database_migration_url = aws_secretsmanager_secret.database_migration_url.arn, temporal_api_key = aws_secretsmanager_secret.temporal_api_key.arn }
+  value = { database_runtime_url = aws_secretsmanager_secret.database_runtime_url.arn, database_migration_url = aws_secretsmanager_secret.database_migration_url.arn, database_admin_url = aws_secretsmanager_secret.database_admin_url.arn, temporal_api_key = aws_secretsmanager_secret.temporal_api_key.arn }
 }
 
 output "ecr_repository_urls" {
-  value = { api = aws_ecr_repository.api.repository_url, worker = aws_ecr_repository.worker.repository_url, migrate = aws_ecr_repository.migrate.repository_url }
+  value = { api = aws_ecr_repository.api.repository_url, worker = aws_ecr_repository.worker.repository_url, migrate = aws_ecr_repository.migrate.repository_url, admin = aws_ecr_repository.admin.repository_url }
 }
 
 output "network_ids" {
-  value = { cluster = aws_ecs_cluster.main.arn, app_subnets = aws_subnet.app[*].id, migration_security_group = aws_security_group.migrate.id }
+  value = { cluster = aws_ecs_cluster.main.arn, app_subnets = aws_subnet.app[*].id, migration_security_group = aws_security_group.migrate.id, admin_security_group = aws_security_group.admin.id }
 }
