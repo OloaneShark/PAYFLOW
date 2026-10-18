@@ -12,15 +12,16 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect/v2"
-	"connectrpc.com/connect/v2/connecthttp"
-	"connectrpc.com/connect/v2/connectinprocess"
-	"github.com/jackc/pgx/v5/pgxpool"
 	paymentv1 "payflow/gen/go/payflow/v1"
 	paymentv1connect "payflow/gen/go/payflow/v1/payflowv1connect"
 	"payflow/internal/banking"
 	"payflow/internal/payment"
 	"payflow/internal/storage"
+
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/connect/v2/connectinprocess"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func processingClient(pool *pgxpool.Pool, enabled bool) paymentv1connect.PaymentServiceClient {
