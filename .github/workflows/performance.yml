@@ -16,6 +16,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Validate local alert rules
+        run: |
+          docker run --rm -v "$PWD/docs:/etc/payflow:ro" --entrypoint /bin/promtool prom/prometheus:v3.7.3 check rules /etc/payflow/alerts.yml
+          docker run --rm -v "$PWD/docs:/etc/payflow:ro" --entrypoint /bin/promtool prom/prometheus:v3.7.3 test rules /etc/payflow/alerts.test.yml
       - name: Run isolated smoke and CGO race suite
         shell: bash
         run: |

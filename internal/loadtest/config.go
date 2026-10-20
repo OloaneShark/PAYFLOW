@@ -17,6 +17,8 @@ type Config struct {
 	Requests         int
 	Clients          int
 	Duration         time.Duration
+	Warmup           time.Duration
+	Trials           int
 	RequestTimeout   time.Duration
 	SettleTimeout    time.Duration
 	API              string
@@ -25,6 +27,8 @@ type Config struct {
 	AllowLocalTest   bool
 	StressOptIn      bool
 	TemporalVersion  string
+	TemporalAddress  string
+	TemporalNS       string
 	RecoveryScenario string
 	OutputFormat     string
 	OutputDir        string
@@ -50,6 +54,17 @@ func (c *Config) Defaults() error {
 		if !c.StressOptIn {
 			return errors.New("stress preset requires -stress-opt-in")
 		}
+	case "sustained":
+		requests, clients = 5000, 8
+		if c.Duration == 0 {
+			c.Duration = 2 * time.Minute
+		}
+		if c.Warmup == 0 {
+			c.Warmup = 10 * time.Second
+		}
+		if !c.StressOptIn {
+			return errors.New("sustained preset requires -stress-opt-in")
+		}
 	case "recovery":
 		requests, clients = 50, 4
 	default:
@@ -60,6 +75,9 @@ func (c *Config) Defaults() error {
 	}
 	if c.Clients == 0 {
 		c.Clients = clients
+	}
+	if c.Trials == 0 {
+		c.Trials = 1
 	}
 	if c.RequestTimeout == 0 {
 		c.RequestTimeout = 5 * time.Second
@@ -82,6 +100,12 @@ func (c *Config) Defaults() error {
 	if c.TemporalVersion == "" {
 		c.TemporalVersion = "unavailable (Compose pins temporalio/temporal:1.9.1)"
 	}
+	if c.TemporalAddress == "" {
+		c.TemporalAddress = "127.0.0.1:17233"
+	}
+	if c.TemporalNS == "" {
+		c.TemporalNS = "default"
+	}
 	return c.Validate()
 }
 
@@ -90,14 +114,15 @@ func (c Config) Validate() error {
 		return errors.New("dedicated local-test opt-in and development environment are required")
 	}
 	if !workloads[c.Workload] || c.Requests < 1 || c.Requests > 5000 || c.Clients < 1 || c.Clients > 64 ||
-		c.Duration < 0 || c.Duration > 5*time.Minute || c.RequestTimeout <= 0 || c.RequestTimeout > time.Minute ||
+		c.Duration < 0 || c.Duration > 5*time.Minute || c.Warmup < 0 || c.Warmup > 30*time.Second ||
+		c.Trials < 1 || c.Trials > 5 || c.RequestTimeout <= 0 || c.RequestTimeout > time.Minute ||
 		c.SettleTimeout <= 0 || c.SettleTimeout > 5*time.Minute {
 		return errors.New("workload, request, client, or timeout limit is invalid")
 	}
-	if c.Preset == "stress" && !c.StressOptIn {
-		return errors.New("stress preset requires explicit opt-in")
+	if (c.Preset == "stress" || c.Preset == "sustained") && !c.StressOptIn {
+		return errors.New("stress and sustained presets require explicit opt-in")
 	}
-	if (c.Requests > 1000 || c.Clients > 16 || c.Duration > 2*time.Minute) && !c.StressOptIn {
+	if (c.Requests > 1000 || c.Clients > 16 || c.Duration > 2*time.Minute || c.Warmup > 0 || c.Trials > 1) && !c.StressOptIn {
 		return errors.New("large benchmarks require -stress-opt-in")
 	}
 	if c.OutputFormat != "json" && c.OutputFormat != "csv" && c.OutputFormat != "markdown" && c.OutputFormat != "all" {
@@ -105,6 +130,9 @@ func (c Config) Validate() error {
 	}
 	if c.RecoveryScenario != "" && c.RecoveryScenario != "api-restart" && c.RecoveryScenario != "worker-restart" && c.RecoveryScenario != "postgres-interruption" && c.RecoveryScenario != "temporal-unavailable" {
 		return errors.New("unsupported recovery scenario label")
+	}
+	if host, port, err := net.SplitHostPort(c.TemporalAddress); err != nil || !loopback(host) || port == "" || c.TemporalNS == "" {
+		return errors.New("Temporal measurement target must be a loopback host:port and namespace")
 	}
 	u, err := url.Parse(c.API)
 	if err != nil || u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || !loopback(u.Hostname()) || u.Port() == "" {

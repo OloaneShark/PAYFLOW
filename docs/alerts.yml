@@ -6,6 +6,11 @@ groups:
         for: 10m
         labels: {severity: warning}
         annotations: {summary: "PAYFLOW reconciliation backlog is growing"}
+      - alert: PayflowDurableDispatchBacklog
+        expr: payflow_workflow_dispatch_backlog > 20
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "PAYFLOW durable workflow dispatch backlog exceeds 20"}
       - alert: PayflowWorkflowDispatchFailures
         expr: increase(payflow_workflow_dispatch_failures_total[10m]) > 5
         labels: {severity: warning}
@@ -15,6 +20,11 @@ groups:
         for: 5m
         labels: {severity: warning}
         annotations: {summary: "PAYFLOW has expired processing leases"}
+      - alert: PayflowReconciliationRetriesExhausted
+        expr: payflow_reconciliation_retry_exhausted > 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "PAYFLOW recovery attempts exhausted; operator review needed"}
       - alert: PayflowLedgerIntegrity
         expr: payflow_ledger_integrity_violations > 0
         labels: {severity: critical}
@@ -23,3 +33,17 @@ groups:
         expr: increase(payflow_database_errors_total[5m]) > 10
         labels: {severity: warning}
         annotations: {summary: "PAYFLOW database operations are failing"}
+      - alert: PayflowDatabaseUnavailable
+        expr: payflow_database_connectivity == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "PAYFLOW worker cannot query PostgreSQL"}
+      - alert: PayflowWorkerUnavailable
+        expr: absent_over_time(up{job="payflow-worker"}[2m]) or up{job="payflow-worker"} == 0
+        labels: {severity: critical}
+        annotations: {summary: "PAYFLOW worker metrics endpoint is unavailable"}
+      - alert: PayflowAPIReadinessFailure
+        expr: probe_success{job="payflow-api-readiness"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "PAYFLOW API readiness probe is failing"}

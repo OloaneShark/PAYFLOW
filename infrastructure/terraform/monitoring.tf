@@ -57,3 +57,23 @@ resource "aws_cloudwatch_metric_alarm" "worker_cpu" {
     ServiceName = aws_ecs_service.worker[0].name
   }
 }
+
+# Container Insights is enabled on the ECS cluster. This metric measures
+# running tasks, not Temporal poller health; the task /readyz health check
+# separately tests PostgreSQL and Temporal from inside the worker.
+resource "aws_cloudwatch_metric_alarm" "worker_running_tasks" {
+  count               = var.enable_runtime && var.worker_desired_count > 0 ? 1 : 0
+  alarm_name          = "${local.name}-worker-no-running-task"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "RunningTaskCount"
+  namespace           = "ECS/ContainerInsights"
+  period              = 60
+  statistic           = "Minimum"
+  threshold           = 1
+  treat_missing_data  = "breaching"
+  dimensions = {
+    ClusterName = aws_ecs_cluster.main.name
+    ServiceName = aws_ecs_service.worker[0].name
+  }
+}

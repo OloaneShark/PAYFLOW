@@ -55,3 +55,31 @@ Observed October 18, 2026 (America/New_York) on the disposable Windows/Docker st
 | Temporal unavailable | 5.90 s | 13.58 s | Passed |
 
 These are single local runs, not reliability service-level objectives. The Temporal interruption had the longest recovery in this sample; worker reconnection and the two-second dispatch scan may contribute, but no detailed reconnect trace was profiled. No external service or AWS resource was used. The intentionally unknown provider case remains unresolved by design and needs operator investigation, not an invented terminal status.
+
+## Phase 9 recovery and alert review
+
+The existing integration tests cover worker restart, Temporal dispatch retry, database reconnection, duplicate workflow requests, concurrent recovery claims, interrupted journal posting, and a lost mock-provider approval response. They assert the original provider operation ID, one logical charge and journal, balanced entries, and unresolved status for a permanently unknown outcome. The manual Phase 8 harness still performs API, worker, PostgreSQL, and Temporal interruption tests in the disposable stack; it records observed dispatch and completion intervals, but each published result is a single run. No Phase 9 sustained outage or AWS failure injection was run.
+
+Phase 9 narrowed the harness's injection precondition to **new** pending dispatches created after the run began; stale rows from earlier tests cannot satisfy it. It also reads PostgreSQL timestamps for injection, service restoration, and the last newly submitted terminal payment. An October 19, 2026 local API restart run submitted 40 payments, had zero API failures, zero pending submissions, and zero invariant violations. Its last payment became terminal 4.290 seconds after injection and 1.992 seconds after API restoration. Those are one-run observations, not a recovery objective. The other three interruption types retain the Phase 8 results above and were not rerun with the new timing output.
+
+The worker now exports `payflow_workflow_dispatch_backlog`, `payflow_reconciliation_retry_exhausted`, and `payflow_database_connectivity` alongside the existing reconciliation, expired-claim, and ledger gauges. The recovery scan refreshes these from durable PostgreSQL rows. Prometheus rules in [alerts.yml](alerts.yml) cover each category plus worker scrape loss and API `/readyz` probe failure. The worker and API `up`/`probe_success` rules require an operator-configured local scrape and blackbox probe; no scraper or notification receiver is deployed by PAYFLOW. CloudWatch has an ALB healthy-target alarm for API readiness and a Container Insights `RunningTaskCount` alarm for worker availability when desired count is positive. Running task count is not proof of Temporal connectivity; the worker container's `/readyz` check exercises PostgreSQL and Temporal.
+
+The local warning thresholds (`>20` dispatch/reconciliation for five/ten minutes, `>0` expired claims for five minutes) are starting assumptions, **not** measured service-level objectives. Retry exhaustion or a ledger violation alerts after two minutes or immediately. Set thresholds from sustained local evidence before an authorized deployment. A database outage can make gauges stale; combine them with scrape loss, `/readyz`, and ECS/RDS health. The `payflow_ledger_integrity_violations` scan examines up to 10,000 completed records per refresh and must not be interpreted as an unbounded full-ledger audit.
+
+To validate rule expressions and important firing delays without altering payment data, use Prometheus `promtool` with synthetic metric series:
+
+```powershell
+promtool check rules docs/alerts.yml
+promtool test rules docs/alerts.test.yml
+```
+
+If `promtool` is not installed, use an official local container (Prometheus v3.7.3). This pulls an image but creates no AWS resource:
+
+```powershell
+docker run --rm -v "${PWD}\docs:/etc/payflow:ro" --entrypoint /bin/promtool prom/prometheus:v3.7.3 check rules /etc/payflow/alerts.yml
+docker run --rm -v "${PWD}\docs:/etc/payflow:ro" --entrypoint /bin/promtool prom/prometheus:v3.7.3 test rules /etc/payflow/alerts.test.yml
+```
+
+Both commands passed locally on October 19, 2026: ten alert expressions loaded and the synthetic firing tests succeeded. This validates PromQL syntax and selected threshold delays, not live AWS metric delivery or notification routing.
+
+To exercise real local conditions, use the isolated stack from [performance.md](performance.md). The `temporal-unavailable` harness scenario leaves durable dispatch rows pending while the local Temporal service is stopped, then restores it; inspect `http://127.0.0.1:19091/metrics` for backlog changes. The `postgres-interruption` scenario can drive database error/connectivity metrics. Use existing deterministic `NETWORK_TIMEOUT` and `LOST_APPROVAL_RESPONSE` integration scenarios for reconciliation. Do not hand-edit ledger or production payments merely to make an alert fire. `promtool` tests cover synthetic threshold behavior without changing infrastructure.

@@ -182,6 +182,8 @@ Development Compose credentials are only for the local container. Supply a secre
 
 Phase 8 includes a bounded Go ConnectRPC load client, a disposable Compose stack on separate ports, financial invariant checks, and manual restart/outage scenarios. It refuses production and ordinary development databases. Run `go run ./cmd/loadtest -h` for workload flags, then follow [performance benchmarks](docs/performance.md) and [reliability testing](docs/reliability-testing.md) for Windows PowerShell setup, observed local results, and failure injection. Raw results are written under ignored `results/`. A manually triggered GitHub Actions workflow runs a small smoke benchmark and the Linux CGO race suite; long stress tests remain manual.
 
+Phase 9 adds opt-in warmup, repeated trials, a paced sustained preset, and run comparison; no sustained throughput claim is made. [Local preflight](docs/deployment-readiness.md) reports separate pass, fail, missing configuration, and untested checks without contacting AWS. A future 24-hour demo requires [time-box and cost ownership](docs/temporary-deployment.md) and a [manual teardown plan](docs/teardown.md). Terraform validation and local test success alone do not authorize or prove an AWS deployment.
+
 ```powershell
 go mod download
 go build ./...

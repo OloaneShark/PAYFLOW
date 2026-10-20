@@ -1,0 +1,39 @@
+rule_files:
+  - alerts.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: payflow_workflow_dispatch_backlog
+        values: '0 25 25 25 25 25 25 25'
+      - series: payflow_reconciliation_retry_exhausted
+        values: '0 1 1 1 1 1 1 1'
+      - series: payflow_database_connectivity
+        values: '1 0 0 0 0 0 0 0'
+      - series: payflow_ledger_integrity_violations
+        values: '0 1 1 1 1 1 1 1'
+      - series: 'up{job="payflow-worker"}'
+        values: '1 1 1 1 1 1 1 1'
+      - series: 'probe_success{job="payflow-api-readiness"}'
+        values: '1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PayflowReconciliationRetriesExhausted
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations: {summary: 'PAYFLOW recovery attempts exhausted; operator review needed'}
+      - eval_time: 3m
+        alertname: PayflowDatabaseUnavailable
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations: {summary: 'PAYFLOW worker cannot query PostgreSQL'}
+      - eval_time: 1m
+        alertname: PayflowLedgerIntegrity
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations: {summary: 'PAYFLOW ledger integrity check found inconsistent completed payments'}
+      - eval_time: 6m
+        alertname: PayflowDurableDispatchBacklog
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations: {summary: 'PAYFLOW durable workflow dispatch backlog exceeds 20'}

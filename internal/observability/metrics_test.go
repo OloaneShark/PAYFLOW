@@ -14,10 +14,13 @@ func TestPrometheusMetricsHaveBoundedNames(t *testing.T) {
 	r.Inc("payflow_approvals_total")
 	r.Observe("payflow_provider_response_seconds", 150*time.Millisecond)
 	r.Set("payflow_reconciliation_backlog", 2)
+	r.Set("payflow_workflow_dispatch_backlog", 3)
+	r.Set("payflow_reconciliation_retry_exhausted", 1)
+	r.Set("payflow_database_connectivity", 1)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
-	for _, expected := range []string{"payflow_processing_attempts_total 1", "payflow_approvals_total 1", "payflow_provider_response_seconds_count 1", "payflow_reconciliation_backlog 2"} {
+	for _, expected := range []string{"payflow_processing_attempts_total 1", "payflow_approvals_total 1", "payflow_provider_response_seconds_count 1", "payflow_reconciliation_backlog 2", "payflow_workflow_dispatch_backlog 3", "payflow_reconciliation_retry_exhausted 1", "payflow_database_connectivity 1"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("missing %q in %s", expected, body)
 		}

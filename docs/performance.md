@@ -80,3 +80,34 @@ These small, local, bursty runs are comparisons within one machine, not capacity
 An `EXPLAIN (ANALYZE, BUFFERS)` of the pending-dispatch query on this disposable database used `payment_workflow_dispatch_pending_idx` and reported 0.021 ms execution time with **zero pending rows**. That confirms the idle query plan, not its performance under a deep backlog. Eight-client baseline traffic showed zero request failures; database pool pressure, lock waits, worker saturation, retry excess, and server goroutine growth were not independently measured. The result records the load client's Go heap system allocation, not server memory. Capture `pg_stat_activity`, server profiles, and a sustained backlog before making throughput changes.
 
 No performance-sensitive application code was changed in this phase, so there is no before/after optimization claim. Longer stress runs were not executed automatically.
+
+## Phase 9 benchmark methodology
+
+The load client now supports `-warmup` (up to 30 seconds), `-trials` (up to five independent runs), `-compare <prior-result.json>`, and a paced `sustained` preset. Any warmup, multiple trials, or the sustained preset requires `-stress-opt-in`. Warmup sends at most 1000 authenticated balance requests using the configured concurrency and is excluded from measured traffic. Each trial creates a fresh synthetic merchant and runs the financial verifier independently. Trial artifacts report each throughput plus min, median, p95, and max throughput across trials; each trial retains its own API p50/p95/p99 and ConnectRPC error categories. An aggregate cannot pass if any trial fails.
+
+The sustained preset defaults to at most 5000 requests, eight clients, a ten-second warmup, and a two-minute measured interval. It spaces request starts across that interval and stops at the duration cap. A slow service may complete fewer than 5000 requests. The request, client, duration, warmup, and trial limits remain hard bounds. **No sustained result is reported here because this preset has not been run.** Run it only after explicitly choosing a disposable environment and resource budget:
+
+```powershell
+.\.tools\phase8-loadtest.exe -allow-local-test -stress-opt-in -preset sustained -workload mixed
+.\.tools\phase8-loadtest.exe -allow-local-test -stress-opt-in -preset baseline -workload mixed -warmup 5s -trials 3
+.\.tools\phase8-loadtest.exe -allow-local-test -preset baseline -workload mixed -compare 'results/loadtest/<prior-single-trial>.json'
+```
+
+The comparison requires matching workload, concurrency, configured request and duration limits, and warmup; use JSON results produced by the Phase 9 client. It prints a descriptive throughput delta and side-by-side API p50/p95/p99; control host load, database state, and software versions before interpreting a difference. A single run does not establish sustained capacity or statistical significance.
+
+Submission API latency is now reported separately from all-request HTTP latency. Durable PostgreSQL timestamps also report dispatch wait, creation-to-approval, submission-to-terminal (`COMPLETED` or `FAILED`), processing-claim-to-terminal, and completed reconciliation intervals. These intervals include queuing and retries. Processing-claim-to-terminal is **not** Temporal workflow duration. The client separately samples Temporal's start and close timestamps for at most 100 terminal workflows through a loopback Temporal endpoint (`-temporal-address`, `-temporal-namespace`). It reports the number observed versus eligible samples; an unavailable or still-open history is stated as a limitation, not counted as a zero-duration workflow. Unresolved submitted payments are counted separately and fail a normal benchmark; a successful HTTP submission is never treated as financial completion. Individual database and ledger posting durations remain unavailable.
+
+### Observed Phase 9 short-run verification
+
+Observed October 19, 2026 (America/New_York) on the same disposable Windows/Docker setup. These are **LOCAL SIMULATED PAYMENT BENCHMARKS** with only 20 or 200 measured requests per trial; they are not sustained-throughput observations. The three baseline trials used a one-second warmup and eight clients.
+
+| Run | Requests | API failures | Requests/s | API p50 / p95 / p99 | Average submission-to-terminal | Invariant violations |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| Smoke mixed | 20 | 0 | 694.5 | 2.08 / 5.73 / 8.45 ms | 1,487 ms | 0 |
+| Baseline trial 1 | 200 | 0 | 2,646.4 | 2.16 / 5.29 / 12.02 ms | 1,562 ms | 0 |
+| Baseline trial 2 | 200 | 0 | 2,518.1 | 2.60 / 6.28 / 13.03 ms | 1,890 ms | 0 |
+| Baseline trial 3 | 200 | 0 | 2,270.8 | 2.13 / 11.10 / 29.84 ms | 1,072 ms | 0 |
+
+All four runs had zero pending submitted payments and passed the financial verifier. The three-trial throughput distribution was min 2,270.8, median 2,518.1, p95/max 2,646.4 requests/s. With three trials the p95 is the maximum observation and carries little statistical weight. Dispatch wait varied across trials; no server profile or deep-queue test was captured, so no targeted performance optimization was made.
+
+A separate 20-request smoke run after enabling the Temporal history sample observed **3 of 3** terminal workflow histories with an average workflow execution interval of **280.6 ms**. Its average submission-to-terminal interval was **1,279.4 ms**, with zero API failures and zero invariant violations. The difference includes queueing and dispatch wait; this single small run is not a capacity measurement.

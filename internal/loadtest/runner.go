@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.temporal.io/sdk/client"
 	paymentv1 "payflow/gen/go/payflow/v1"
 	paymentv1connect "payflow/gen/go/payflow/v1/payflowv1connect"
 	"payflow/internal/auth"
@@ -154,12 +155,17 @@ func Run(ctx context.Context, config Config) (Result, error) {
 		TestName: config.Preset + "/" + config.Workload, DateUTC: time.Now().UTC(),
 		PostgresVersion: postgresVersion, TemporalVersion: config.TemporalVersion,
 		Concurrency: config.Clients, Operations: make(map[string]int), ErrorCategories: make(map[string]int),
+		RequestLimit: config.Requests, DurationLimitSec: config.Duration.Seconds(),
 		Recovery:    "not injected by this run",
-		Limitations: []string{"API preparation and invariant checks are excluded from measured request latency", "Temporal version is a configured Compose image unless independently supplied", "DB operation and ledger posting latencies are not individually instrumented"},
+		Limitations: []string{"API preparation, warmup, settlement, and invariant checks are excluded from measured request latency", "Temporal version is a configured Compose image unless independently supplied", "Workflow history is sampled from at most 100 terminal dispatches; DB operation and ledger posting latencies are not individually instrumented"},
+	}
+	if err := warmup(ctx, api, config); err != nil {
+		return Result{}, err
 	}
 	var next atomic.Int64
 	var mu sync.Mutex
 	samples := make([]time.Duration, 0, config.Requests)
+	submissionSamples := make([]time.Duration, 0, config.Requests/4)
 	started := time.Now()
 	var wg sync.WaitGroup
 	for worker := 0; worker < config.Clients; worker++ {
@@ -174,6 +180,21 @@ func Run(ctx context.Context, config Config) (Result, error) {
 				index := int(next.Add(1)) - 1
 				if index >= config.Requests {
 					return
+				}
+				if config.Preset == "sustained" {
+					startAt := started.Add(time.Duration(index) * config.Duration / time.Duration(config.Requests))
+					if wait := time.Until(startAt); wait > 0 {
+						timer := time.NewTimer(wait)
+						select {
+						case <-ctx.Done():
+							timer.Stop()
+							return
+						case <-timer.C:
+						}
+					}
+					if time.Since(started) >= config.Duration {
+						return
+					}
 				}
 				operation := config.Workload
 				if operation == "mixed" {
@@ -202,6 +223,9 @@ func Run(ctx context.Context, config Config) (Result, error) {
 				duration := time.Since(begin)
 				mu.Lock()
 				samples = append(samples, duration)
+				if operation == "submit" || operation == "concurrent-submit" {
+					submissionSamples = append(submissionSamples, duration)
+				}
 				result.Operations[operation]++
 				result.TotalRequests++
 				if callErr == nil {
@@ -221,6 +245,8 @@ func Run(ctx context.Context, config Config) (Result, error) {
 	wg.Wait()
 	result.DurationSeconds = time.Since(started).Seconds()
 	result.Latency = latency(samples)
+	result.Submission = latency(submissionSamples)
+	result.WarmupSeconds = config.Warmup.Seconds()
 	if result.DurationSeconds > 0 {
 		result.RequestsPerSec = float64(result.TotalRequests) / result.DurationSeconds
 	}
@@ -231,7 +257,7 @@ func Run(ctx context.Context, config Config) (Result, error) {
 		WHERE p.merchant_id=$1 AND p.status NOT IN ('COMPLETED','FAILED')`, merchant).Scan(&result.PendingSubmitted); err != nil {
 		return result, err
 	}
-	result.Completion, result.Dispatch, result.Reconciliation, err = asyncTimings(ctx, pool, merchant)
+	result.Completion, result.Dispatch, result.Reconciliation, result.Terminal, result.ProcessingWindow, err = asyncTimings(ctx, pool, merchant)
 	if err != nil {
 		return result, err
 	}
@@ -241,6 +267,12 @@ func Run(ctx context.Context, config Config) (Result, error) {
 	}
 	if err := workloadChecks(ctx, pool, merchant, runID, config.Workload, seed, &result); err != nil {
 		return result, err
+	}
+	result.Workflow, result.WorkflowCandidates, err = workflowTimings(ctx, pool, merchant, config)
+	if err != nil {
+		result.Limitations = append(result.Limitations, "Local Temporal workflow history was unavailable for this run")
+	} else if result.Workflow.Count < result.WorkflowCandidates {
+		result.Limitations = append(result.Limitations, "Some sampled terminal payments had no closed Temporal workflow history at observation time")
 	}
 	result.Passed = result.TotalRequests > 0 && result.Failed == 0 && result.PendingSubmitted == 0 && result.Invariant.Passed && ctx.Err() == nil
 	if config.RecoveryScenario != "" {
@@ -252,6 +284,96 @@ func Run(ctx context.Context, config Config) (Result, error) {
 	}
 	result.runtimeMetadata()
 	return result, nil
+}
+
+func workflowTimings(ctx context.Context, pool *pgxpool.Pool, merchant string, config Config) (AsyncTiming, int, error) {
+	rows, err := pool.Query(ctx, `SELECT d.workflow_id FROM payment_workflow_dispatch d
+		JOIN payments p ON p.id=d.payment_id WHERE p.merchant_id=$1 AND p.status IN ('COMPLETED','FAILED')
+		ORDER BY d.requested_at LIMIT 100`, merchant)
+	if err != nil {
+		return AsyncTiming{}, 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return AsyncTiming{}, 0, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil || len(ids) == 0 {
+		return AsyncTiming{}, 0, err
+	}
+	sampleCtx, stop := context.WithTimeout(ctx, 15*time.Second)
+	defer stop()
+	temporalClient, err := client.DialContext(sampleCtx, client.Options{HostPort: config.TemporalAddress, Namespace: config.TemporalNS})
+	if err != nil {
+		return AsyncTiming{}, len(ids), err
+	}
+	defer temporalClient.Close()
+	var timing AsyncTiming
+	for _, id := range ids {
+		if sampleCtx.Err() != nil {
+			break
+		}
+		requestCtx, cancel := context.WithTimeout(sampleCtx, time.Second)
+		response, describeErr := temporalClient.DescribeWorkflowExecution(requestCtx, id, "")
+		cancel()
+		if describeErr != nil || response == nil || response.GetWorkflowExecutionInfo() == nil {
+			continue
+		}
+		info := response.GetWorkflowExecutionInfo()
+		started, closed := info.GetStartTime(), info.GetCloseTime()
+		if started == nil || closed == nil || !started.IsValid() || !closed.IsValid() {
+			continue
+		}
+		elapsed := closed.AsTime().Sub(started.AsTime())
+		if elapsed < 0 {
+			continue
+		}
+		timing.Count++
+		timing.AverageMS += float64(elapsed) / float64(time.Millisecond)
+	}
+	if timing.Count > 0 {
+		timing.AverageMS /= float64(timing.Count)
+	}
+	return timing, len(ids), nil
+}
+
+func warmup(ctx context.Context, api caller, config Config) error {
+	if config.Warmup == 0 {
+		return nil
+	}
+	warmCtx, cancel := context.WithTimeout(ctx, config.Warmup)
+	defer cancel()
+	var next atomic.Int64
+	var first error
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < config.Clients; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for warmCtx.Err() == nil && next.Add(1) <= 1000 {
+				if err := api.balance(warmCtx); err != nil && warmCtx.Err() == nil {
+					mu.Lock()
+					if first == nil {
+						first = err
+					}
+					mu.Unlock()
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if first == nil && ctx.Err() == nil {
+		<-warmCtx.Done()
+	}
+	return first
 }
 
 func settle(ctx context.Context, pool *pgxpool.Pool, merchant string, limit time.Duration) error {
@@ -279,8 +401,8 @@ func settle(ctx context.Context, pool *pgxpool.Pool, merchant string, limit time
 	}
 }
 
-func asyncTimings(ctx context.Context, pool *pgxpool.Pool, merchant string) (AsyncTiming, AsyncTiming, AsyncTiming, error) {
-	var completion, dispatch, reconciliation AsyncTiming
+func asyncTimings(ctx context.Context, pool *pgxpool.Pool, merchant string) (AsyncTiming, AsyncTiming, AsyncTiming, AsyncTiming, AsyncTiming, error) {
+	var completion, dispatch, reconciliation, terminal, processing AsyncTiming
 	err := pool.QueryRow(ctx, `SELECT
 		count(*) FILTER (WHERE p.completed_at IS NOT NULL),
 		COALESCE(avg(EXTRACT(EPOCH FROM p.completed_at-p.created_at)*1000) FILTER (WHERE p.completed_at IS NOT NULL),0)::float8,
@@ -288,11 +410,18 @@ func asyncTimings(ctx context.Context, pool *pgxpool.Pool, merchant string) (Asy
 		COALESCE(avg(EXTRACT(EPOCH FROM d.dispatched_at-d.requested_at)*1000) FILTER (WHERE d.dispatched_at IS NOT NULL),0)::float8,
 		count(*) FILTER (WHERE p.completed_at IS NOT NULL AND p.reconciliation_required_at IS NOT NULL),
 		COALESCE(avg(EXTRACT(EPOCH FROM p.completed_at-p.reconciliation_required_at)*1000)
-			FILTER (WHERE p.completed_at IS NOT NULL AND p.reconciliation_required_at IS NOT NULL),0)::float8
+			FILTER (WHERE p.completed_at IS NOT NULL AND p.reconciliation_required_at IS NOT NULL),0)::float8,
+		count(*) FILTER (WHERE COALESCE(p.completed_at,p.failed_at) IS NOT NULL AND d.requested_at IS NOT NULL),
+		COALESCE(avg(EXTRACT(EPOCH FROM COALESCE(p.completed_at,p.failed_at)-d.requested_at)*1000)
+			FILTER (WHERE COALESCE(p.completed_at,p.failed_at) IS NOT NULL AND d.requested_at IS NOT NULL),0)::float8,
+		count(*) FILTER (WHERE COALESCE(p.completed_at,p.failed_at) IS NOT NULL AND p.processing_started_at IS NOT NULL),
+		COALESCE(avg(EXTRACT(EPOCH FROM COALESCE(p.completed_at,p.failed_at)-p.processing_started_at)*1000)
+			FILTER (WHERE COALESCE(p.completed_at,p.failed_at) IS NOT NULL AND p.processing_started_at IS NOT NULL),0)::float8
 		FROM payments p LEFT JOIN payment_workflow_dispatch d ON d.payment_id=p.id
 		WHERE p.merchant_id=$1`, merchant).Scan(&completion.Count, &completion.AverageMS,
-		&dispatch.Count, &dispatch.AverageMS, &reconciliation.Count, &reconciliation.AverageMS)
-	return completion, dispatch, reconciliation, err
+		&dispatch.Count, &dispatch.AverageMS, &reconciliation.Count, &reconciliation.AverageMS,
+		&terminal.Count, &terminal.AverageMS, &processing.Count, &processing.AverageMS)
+	return completion, dispatch, reconciliation, terminal, processing, err
 }
 
 func workloadChecks(ctx context.Context, pool *pgxpool.Pool, merchant, runID, workload, seed string, result *Result) error {

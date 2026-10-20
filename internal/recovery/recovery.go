@@ -105,16 +105,28 @@ func (s *Scanner) RefreshMetrics(ctx context.Context) {
 	if s.Metrics == nil {
 		return
 	}
-	var backlog, stuck int64
+	var backlog, stuck, exhausted int64
 	err := s.Pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='RECONCILIATION_REQUIRED'),
-        count(*) FILTER (WHERE status='PROCESSING' AND processing_lease_until<now())
-        FROM payments`).Scan(&backlog, &stuck)
+		count(*) FILTER (WHERE status='PROCESSING' AND processing_lease_until<now()),
+		count(*) FILTER (WHERE (status='RECONCILIATION_REQUIRED' OR
+			(status='PROCESSING' AND processing_lease_until<now())) AND recovery_attempts >= $1)
+		FROM payments`, s.MaxAttempts).Scan(&backlog, &stuck, &exhausted)
 	if err != nil {
 		s.Metrics.Inc("payflow_database_errors_total")
+		s.Metrics.Set("payflow_database_connectivity", 0)
 		return
 	}
+	s.Metrics.Set("payflow_database_connectivity", 1)
 	s.Metrics.Set("payflow_reconciliation_backlog", float64(backlog))
 	s.Metrics.Set("payflow_stuck_processing_claims", float64(stuck))
+	s.Metrics.Set("payflow_reconciliation_retry_exhausted", float64(exhausted))
+	var dispatchBacklog int64
+	if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM payment_workflow_dispatch WHERE dispatched_at IS NULL`).Scan(&dispatchBacklog); err != nil {
+		s.Metrics.Inc("payflow_database_errors_total")
+		s.Metrics.Set("payflow_database_connectivity", 0)
+		return
+	}
+	s.Metrics.Set("payflow_workflow_dispatch_backlog", float64(dispatchBacklog))
 	issues, err := (&ledger.Service{Pool: s.Pool}).CompletedIssues(ctx, 10000)
 	if err != nil {
 		s.Metrics.Inc("payflow_database_errors_total")

@@ -39,9 +39,12 @@ var durations = map[string]bool{
 	"payflow_api_response_seconds":      true,
 }
 var gauges = map[string]bool{
-	"payflow_reconciliation_backlog":      true,
-	"payflow_stuck_processing_claims":     true,
-	"payflow_ledger_integrity_violations": true,
+	"payflow_reconciliation_backlog":         true,
+	"payflow_stuck_processing_claims":        true,
+	"payflow_ledger_integrity_violations":    true,
+	"payflow_workflow_dispatch_backlog":      true,
+	"payflow_reconciliation_retry_exhausted": true,
+	"payflow_database_connectivity":          true,
 }
 
 func New() *Registry {

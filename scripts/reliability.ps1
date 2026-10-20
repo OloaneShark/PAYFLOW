@@ -56,10 +56,28 @@ function Get-DispatchCount {
     return [int]($value | Select-Object -Last 1)
 }
 
-function Get-PendingCount {
-    $value = & docker @compose exec -T postgres psql -U payflow -d $dbName -Atqc "SELECT count(*) FROM payments p JOIN payment_workflow_dispatch d ON d.payment_id=p.id WHERE p.status NOT IN ('COMPLETED','FAILED')"
+function Get-DatabaseEpoch {
+    $value = & docker @compose exec -T postgres psql -U payflow -d $dbName -Atqc 'SELECT extract(epoch FROM clock_timestamp())'
+    if ($LASTEXITCODE -ne 0) { throw 'Dedicated database clock unavailable.' }
+    $epoch = [string]($value | Select-Object -Last 1)
+    if ($epoch -notmatch '^\d+(\.\d+)?$') { throw 'Invalid dedicated database timestamp.' }
+    return $epoch
+}
+
+function Get-PendingCount([string]$since) {
+    if ($since -notmatch '^\d+(\.\d+)?$') { throw 'Invalid benchmark start timestamp.' }
+    $sql = "SELECT count(*) FROM payments p JOIN payment_workflow_dispatch d ON d.payment_id=p.id WHERE d.requested_at >= to_timestamp($since) AND p.status NOT IN ('COMPLETED','FAILED')"
+    $value = & docker @compose exec -T postgres psql -U payflow -d $dbName -Atqc $sql
     if ($LASTEXITCODE -ne 0) { throw 'Dedicated database pending count unavailable.' }
     return [int]($value | Select-Object -Last 1)
+}
+
+function Get-LastTerminalEpoch([string]$since) {
+    if ($since -notmatch '^\d+(\.\d+)?$') { throw 'Invalid benchmark start timestamp.' }
+    $sql = "SELECT coalesce(max(extract(epoch FROM coalesce(p.completed_at,p.failed_at))),0) FROM payments p JOIN payment_workflow_dispatch d ON d.payment_id=p.id WHERE d.requested_at >= to_timestamp($since)"
+    $value = & docker @compose exec -T postgres psql -U payflow -d $dbName -Atqc $sql
+    if ($LASTEXITCODE -ne 0) { throw 'Dedicated database terminal timestamp unavailable.' }
+    return [string]($value | Select-Object -Last 1)
 }
 
 try {
@@ -110,6 +128,7 @@ try {
     if (-not $ready) { throw 'API did not advertise the disposable test database.' }
 
     $before = Get-DispatchCount
+    $runStartedEpoch = Get-DatabaseEpoch
     $arguments = @('-allow-local-test', '-preset', 'recovery', '-workload', 'submit', '-requests', '40',
         '-clients', '4', '-settle-timeout', '90s', '-api', 'http://127.0.0.1:18080',
         '-recovery-scenario', $Scenario, '-output-dir', 'results/loadtest')
@@ -123,8 +142,9 @@ try {
         Start-Sleep -Milliseconds 100
     }
     if (-not $queued) { throw 'No new durable dispatch was observed; no failure was injected.' }
-    if ((Get-PendingCount) -lt 1) { throw 'Submitted work already settled; no failure was injected.' }
+    if ((Get-PendingCount $runStartedEpoch) -lt 1) { throw 'Newly submitted work already settled; no failure was injected.' }
 
+    $outageStartedEpoch = Get-DatabaseEpoch
     switch ($Scenario) {
         'api-restart' {
             Stop-OwnedProcess $api $apiBinary
@@ -155,6 +175,7 @@ try {
             $stoppedService = ''
         }
     }
+    $restoredEpoch = Get-DatabaseEpoch
     if (-not $load.WaitForExit(120000)) { throw 'Recovery run exceeded two minutes.' }
     $load.WaitForExit()
     $load.Refresh()
@@ -167,7 +188,14 @@ try {
         throw 'Recovery benchmark reported failures or incomplete financial invariants.'
     }
     if ($null -ne $load.ExitCode -and $load.ExitCode -ne 0) { throw 'Recovery benchmark process failed.' }
-    Write-Output "$Scenario recovered; inspect the generated local benchmark artifacts."
+    $terminalEpoch = Get-LastTerminalEpoch $runStartedEpoch
+    $invariant = [Globalization.CultureInfo]::InvariantCulture
+    $outageSeconds = [double]::Parse($terminalEpoch, $invariant) - [double]::Parse($outageStartedEpoch, $invariant)
+    $postRestoreSeconds = [double]::Parse($terminalEpoch, $invariant) - [double]::Parse($restoredEpoch, $invariant)
+    if ($outageSeconds -lt 0) { throw 'New work has no confirmed post-injection terminal timestamp.' }
+    $message = "{0} recovered; last terminal result {1:N3}s after injection, {2:N3}s relative to restoration." -f $Scenario, $outageSeconds, $postRestoreSeconds
+    if ($postRestoreSeconds -lt 0) { $message += ' Settlement preceded service restoration.' }
+    Write-Output "$message Inspect the generated local benchmark artifacts."
 }
 finally {
     if ($stoppedService) { & docker @compose up -d --wait $stoppedService | Out-Null }
