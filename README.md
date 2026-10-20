@@ -178,6 +178,10 @@ Development Compose credentials are only for the local container. Supply a secre
 
 ## Build, generate, and test
 
+### Local performance and reliability
+
+Phase 8 includes a bounded Go ConnectRPC load client, a disposable Compose stack on separate ports, financial invariant checks, and manual restart/outage scenarios. It refuses production and ordinary development databases. Run `go run ./cmd/loadtest -h` for workload flags, then follow [performance benchmarks](docs/performance.md) and [reliability testing](docs/reliability-testing.md) for Windows PowerShell setup, observed local results, and failure injection. Raw results are written under ignored `results/`. A manually triggered GitHub Actions workflow runs a small smoke benchmark and the Linux CGO race suite; long stress tests remain manual.
+
 ```powershell
 go mod download
 go build ./...
@@ -222,6 +226,7 @@ The checked-in `buf.gen.yaml` uses local plugins to avoid depending on a hosted 
 | `cmd/admin` | Private one-off ECS administration; no public listener or credential output |
 | `cmd/migrate` | Embedded SQL migration runner |
 | `cmd/healthcheck` | Loopback HTTP readiness probe used by containers |
+| `cmd/loadtest` | Bounded, authenticated local ConnectRPC benchmark client |
 | `internal/config` | Shared database configuration and production TLS requirements |
 | `infrastructure/terraform` | Private AWS deployment definition and example inputs |
 | `.github/workflows` | CI checks without deployment |
@@ -235,6 +240,7 @@ The checked-in `buf.gen.yaml` uses local plugins to avoid depending on a hosted 
 | `internal/admin` | Audited private credential lifecycle and Secrets Manager delivery |
 | `internal/recovery` | Expired-claim and unresolved-outcome scanner |
 | `internal/observability` | Structured correlation context and bounded metrics |
+| `internal/verification` | Post-run provider, journal, and merchant balance invariant checks |
 | `proto/payflow/v1` | Protobuf API contract |
 | `gen/go` | Generated Protobuf and Connect code |
 | `db/migrations` | Versioned SQL and migration runner |

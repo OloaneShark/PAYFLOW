@@ -1,6 +1,6 @@
 module payflow
 
-go 1.27.0
+go 1.27.2
 
 require (
 	connectrpc.com/connect/v2 v2.0.0

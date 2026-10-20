@@ -71,6 +71,14 @@ func main() {
 		logger.Error("invalid database configuration", "error_category", "configuration")
 		os.Exit(1)
 	}
+	loadtestDB := ""
+	if os.Getenv("PAYFLOW_LOADTEST_MODE") == "true" {
+		loadtestDB, err = loadtestDatabase(os.Getenv("PAYFLOW_ENV"), addr, dbConfig)
+		if err != nil {
+			logger.Error("unsafe load test mode", "error_category", "configuration")
+			os.Exit(1)
+		}
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, dbConfig)
 	if err != nil {
 		logger.Error("database pool failed", "error_category", "database")
@@ -103,7 +111,7 @@ func main() {
 	paymentv1connect.RegisterPaymentServiceHandler(server, &payment.Handler{Service: service, Processor: processor, Orchestrator: coordinator, Submitter: &orchestration.SubmissionService{Store: store}, DevProcessingEnabled: devProcessing, AuthRequired: true, Ledger: &ledger.Service{Pool: pool}})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
-	mux.HandleFunc("/healthz", observability.Liveness)
+	mux.HandleFunc("/healthz", loadtestHealth(loadtestDB, observability.Liveness))
 	checks := []func(context.Context) error{func(ctx context.Context) error {
 		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()

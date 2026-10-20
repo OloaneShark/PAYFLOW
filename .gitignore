@@ -11,3 +11,4 @@ coverage.out
 *.tfvars.json
 *.tfplan
 crash.log
+results/
