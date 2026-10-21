@@ -162,10 +162,10 @@ func main() {
 	logger.Info("worker listening", "task_queue", config.TaskQueue)
 	for {
 		scanCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		_, err := coordinator.DispatchPending(scanCtx)
+		scanned, err := coordinator.DispatchPending(scanCtx)
 		cancel()
 		if err != nil && !errors.Is(err, context.Canceled) {
-			logger.Warn("dispatch scan failed", "error_category", "dispatch")
+			logDispatchScanFailure(logger, err, scanned)
 		}
 		select {
 		case <-ctx.Done():
@@ -173,4 +173,9 @@ func main() {
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+func logDispatchScanFailure(logger *slog.Logger, err error, scanned int) {
+	logger.Warn("dispatch scan failed", "error_category", orchestration.DispatchErrorCategory(err),
+		"dispatch_stage", "scan", "scanned_requests", scanned)
 }

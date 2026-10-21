@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"payflow/internal/banking"
 	"payflow/internal/orchestration"
 	"payflow/internal/payment"
@@ -86,10 +88,20 @@ func TestSubmissionDurabilityConcurrentAndDispatchRetry(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM simulated_provider_operations WHERE payment_id=$1`, created.ID).Scan(&providerRows); err != nil || providerRows != 0 {
 		t.Fatalf("HTTP submission processed payment: rows=%d, err=%v", providerRows, err)
 	}
-	starter := &submissionStarter{err: errors.New("Temporal unavailable")}
+	starter := &submissionStarter{err: status.Error(codes.Unavailable, "TEMPORAL_API_KEY=private-value")}
 	coordinator := &orchestration.Coordinator{Store: &oneDispatchStore{Postgres: store, id: created.ID}, Starter: starter}
 	if _, err := coordinator.DispatchPending(ctx); err == nil {
 		t.Fatal("Temporal outage was hidden")
+	}
+	var savedCategory string
+	if err := pool.QueryRow(ctx, `SELECT last_dispatch_error FROM payment_workflow_dispatch WHERE payment_id=$1`, created.ID).Scan(&savedCategory); err != nil || savedCategory != "temporal_unavailable" {
+		t.Fatalf("unsafe saved dispatch category = %q, %v", savedCategory, err)
+	}
+	if err := store.RecordDispatchError(ctx, created.ID, "TEMPORAL_API_KEY=private-value"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT last_dispatch_error FROM payment_workflow_dispatch WHERE payment_id=$1`, created.ID).Scan(&savedCategory); err != nil || savedCategory != "unexpected" {
+		t.Fatalf("unreviewed dispatch text was persisted: %q, %v", savedCategory, err)
 	}
 	req, err = store.Dispatch(ctx, created.ID)
 	if err != nil || req.DispatchedAt != nil {

@@ -3,7 +3,6 @@ package orchestration
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -22,7 +21,7 @@ type DispatchStore interface {
 	Enqueue(context.Context, string, banking.Scenario, string) (storage.DispatchRequest, error)
 	PendingDispatches(context.Context, int) ([]storage.DispatchRequest, error)
 	MarkDispatched(context.Context, string) error
-	RecordDispatchError(context.Context, string, error) error
+	RecordDispatchError(context.Context, string, string) error
 	Get(context.Context, string) (payment.Payment, error)
 }
 
@@ -80,15 +79,26 @@ func (c *Coordinator) DispatchPending(ctx context.Context) (int, error) {
 
 func (c *Coordinator) dispatchOne(ctx context.Context, req storage.DispatchRequest) error {
 	if err := c.Starter.Start(ctx, req); err != nil {
+		category := DispatchErrorCategory(err)
 		if c.Metrics != nil {
 			c.Metrics.Inc("payflow_workflow_dispatch_failures_total")
 		}
-		slog.WarnContext(ctx, "workflow dispatch failed", "payment_id", req.PaymentID, "workflow_id", req.WorkflowID, "error_category", "temporal_dispatch")
-		_ = c.Store.RecordDispatchError(ctx, req.PaymentID, err)
-		return fmt.Errorf("%w: %v", ErrTemporalUnavailable, err)
+		slog.WarnContext(ctx, "workflow dispatch failed", "payment_id", req.PaymentID, "workflow_id", req.WorkflowID,
+			"dispatch_stage", "start_workflow", "error_category", category)
+		if recordErr := c.Store.RecordDispatchError(ctx, req.PaymentID, category); recordErr != nil {
+			slog.WarnContext(ctx, "dispatch diagnostic persistence failed", "payment_id", req.PaymentID,
+				"dispatch_stage", "record_error", "error_category", "database")
+		}
+		return &dispatchStartError{category: category}
 	}
 	slog.DebugContext(ctx, "workflow dispatch confirmed", "payment_id", req.PaymentID, "workflow_id", req.WorkflowID)
-	return c.Store.MarkDispatched(ctx, req.PaymentID)
+	if err := c.Store.MarkDispatched(ctx, req.PaymentID); err != nil {
+		slog.WarnContext(ctx, "workflow dispatch confirmation failed", "payment_id", req.PaymentID,
+			"workflow_id", req.WorkflowID,
+			"dispatch_stage", "mark_dispatched", "error_category", DispatchErrorCategory(err))
+		return err
+	}
+	return nil
 }
 
 type TemporalStarter struct{ Config Config }
