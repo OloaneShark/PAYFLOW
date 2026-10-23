@@ -149,7 +149,7 @@ resource "aws_lb_listener" "https" {
 
 output "private_alb_dns_name" {
   value       = aws_lb.internal.dns_name
-  description = "Private VPC DNS name; requires an approved private network path and a matching certificate hostname."
+  description = "Private VPC DNS name for the SSM remote-host tunnel. HTTPS clients verify payflow-demo.test through local port forwarding."
 }
 
 output "database_address" {

@@ -6,7 +6,7 @@ This is a preparation guide for a future **authorized** AWS deployment. PAYFLOW 
 
 - AWS deployment identity, AWS CLI v2, Terraform 1.14.9, Docker Desktop, Go 1.27.2, Buf 1.73.0, and the versioned Go protobuf plugins. Terraform pins AWS provider 6.64.0.
 - Secured S3 remote state bucket with versioning, encryption, and native lockfiles. State and plans stay outside Git.
-- Two availability zones, routed private client path, private DNS, and a matching ACM certificate. `private_client_cidr` must be the approved client network.
+- Two availability zones and an imported ACM certificate for `payflow-demo.test`. The temporary domain-free path uses an SSM tunnel through a private managed host; see [domain-free demonstration](domain-free-demo.md). An existing routed private client network may still use `private_client_cidr`.
 - Independently provisioned Temporal Cloud namespace, endpoint, and API key.
 - Private RDS administration to create **separate** runtime, migration, and administration database roles. The admin role needs the credential tables for issue/rotate/revoke and the existing recovery, audit, payment, provider, and ledger access for operator commands. Review explicit SQL grants against the commands before deploying. Never reuse the RDS master credential in ECS.
 - Pre-existing IAM role for the approved credential broker, and a different pre-existing role for admin task invokers. Their trust policies, MFA, account restrictions, and secure merchant credential delivery process must be approved outside Terraform. Terraform only attaches narrow resource policies to these roles.
@@ -49,7 +49,7 @@ Tests apply forward migrations, including 006. Use a new test database name for 
 
 ## Future authorized rollout
 
-1. Create remote state and private connectivity through approved procedures. Copy `infrastructure/terraform/terraform.tfvars.example` to ignored `terraform.tfvars`; set real region, CIDR, certificate, and availability zones. Leave `enable_runtime=false`, `enable_admin=false`, and desired counts zero. No secret values belong in tfvars, plans, Git, shell command arguments, or task overrides.
+1. Create remote state through approved procedures. For the temporary domain-free path, prepare a short-lived self-signed `payflow-demo.test` certificate for later ACM import and an approved SSM operator role as described in [domain-free demonstration](domain-free-demo.md). Copy `infrastructure/terraform/terraform.tfvars.example` to ignored `terraform.tfvars`; set the real region, certificate ARN, access role, and availability zones. Leave `enable_runtime=false`, `enable_admin=false`, and desired counts zero. No secret values belong in tfvars, plans, Git, shell command arguments, or task overrides.
 2. Initialize the secured remote backend, plan, review network/RDS/IAM/costs, and apply only after authorization. This stage creates infrastructure, ECR repositories, and **empty** startup secret containers. It starts no API or worker service.
 
    ```powershell
@@ -64,7 +64,7 @@ Tests apply forward migrations, including 006. Use a new test database name for 
 5. Run the migrator task once with the application subnet IDs, `migration_security_group`, and `assignPublicIp=DISABLED` from Terraform outputs. Wait for it to **stop**, verify container exit code 0, and review its CloudWatch log stream. A successful `RunTask` API response alone says nothing about migration success.
 6. On databases upgraded from before migration 004, run `admin issues`, then the provider-verified `admin backfill --confirm`, and re-run `admin issues`. Review historical records rather than treating an old `COMPLETED` label as proof of approval. Migration 006 preserves existing keys as active.
 7. Provision merchant credentials with the private admin task. Use a new UUID request ID for each issue or rotation, record that ID in the change ticket, and pass **only IDs** in task command arguments. The task outputs a secret ARN and key ID but no key. The separately approved credential broker reads the new Secrets Manager value and delivers it through its controlled channel. Test the merchant's authenticated Create/Get/Submit path privately. For rotation, confirm the replacement works and the previous key is revoked. For revocation, test the rejected old key. A `NEEDS_REVIEW` operation must be investigated under the **same request ID**; do not casually issue a new one.
-8. Confirm the checklist below, set `migrations_complete=true` and `deployment_prerequisites_reviewed=true`, then scale API and worker to at least one in a reviewed plan. Check ECS health, ALB `/readyz`, CloudWatch logs, RDS alarms, Temporal poller health, and authenticated Create/Get/Submit/Balance through the private client path. `SimulatePayment` and `ReconcilePayment` must reject calls. Poll `GetPayment` until an approved or declined mock outcome is recorded; no API-side Temporal connection is required.
+8. Confirm the checklist below, set `migrations_complete=true` and `deployment_prerequisites_reviewed=true`, then scale API and worker to at least one in a reviewed plan. Check ECS health, ALB `/readyz`, CloudWatch logs, RDS alarms, Temporal poller health, and authenticated Create/Get/Submit/Balance through the private SSM tunnel. `SimulatePayment` and `ReconcilePayment` must reject calls. Poll `GetPayment` until an approved or declined mock outcome is recorded; no API-side Temporal connection is required. Complete the financial and screenshot checks in [domain-free demonstration](domain-free-demo.md).
 
 For a private admin task, use the `admin_task_definition_arn` and `network_ids` outputs. The task command syntax is:
 
@@ -83,7 +83,7 @@ Invoke using `aws ecs run-task` with the reviewed cluster, admin task definition
 
 ## Readiness checklist
 
-- [ ] **A — Network and identity:** approved private route, DNS/certificate match, ALB CIDR, no public task IP, IAM invoker and broker trust/approval, private admin task authorization.
+- [ ] **A — Network and identity:** SSM operator role and patched managed access host, ALB security-group path, `payflow-demo.test` certificate match, no public task or access-host IP, IAM invoker and broker trust/approval, private admin task authorization.
 - [ ] **B — Data and secrets:** Multi-AZ RDS, verified TLS, three distinct database roles and grants, populated startup secrets, migration 006 exit code 0, historical ledger review, backups and access review.
 - [ ] **C — Images and workflow:** four scanned/reviewed immutable digests, Temporal Cloud namespace/API key, worker connectivity, admin task definition and secure credential broker, pending dispatch and recovery visibility.
 - [ ] **D — Merchant and operation:** issued key delivered by broker, private authenticated Create/Get/Submit/Balance test, rejection of revoked keys, audited admin recovery/backfill, development processing disabled.
@@ -101,4 +101,4 @@ CloudWatch separates `/ecs/payflow-<environment>/api`, `/worker`, `/migrate`, an
 
 For an application rollback, pin a prior reviewed image digest and observe readiness. Schema migrations are forward-only; never run a down migration automatically. A destructive data rollback requires an approved RDS snapshot procedure. Updating a startup secret does not change running ECS containers; roll tasks and verify readiness after secret rotation. Never mark unknown payments failed merely to clear a queue.
 
-Teardown is a separate authorized action: stop traffic and tasks, retain approved backups and final RDS snapshot, review Secrets Manager recovery windows and credential retirement, then handle Terraform destroy and external DNS, VPN, Temporal, and state through their respective owners. Destroy is never a validation step.
+Teardown is a separate authorized action: stop traffic and tasks, remove the temporary SSM access host/endpoints and imported ACM certificate, retain only approved backups and final RDS snapshot, review Secrets Manager recovery windows and credential retirement, then handle Terraform destroy, Temporal, and state through their respective owners. Destroy is never a validation step.

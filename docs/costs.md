@@ -13,7 +13,8 @@ PAYFLOW's proposed AWS layout has recurring costs even when no API or worker tas
 | Secrets Manager | Runtime/migration/admin/Temporal startup secrets, one merchant-key secret per issue or rotation, and API calls; AWS-managed RDS master secret may have different treatment |
 | Data transfer | Cross-zone, NAT, and external Temporal Cloud traffic |
 | Temporal Cloud | Independently billed namespace and usage under the selected Temporal plan |
-| Private connectivity and DNS | VPN/Direct Connect, private DNS, certificate, and remote state storage if supplied |
+| Temporary private access | One `t3.micro` EC2 instance, 8 GiB gp3 root disk, three single-AZ SSM interface endpoint-hours and data processing; remote state storage |
+| Test certificate | Imported self-signed ACM certificate; no purchased domain or AWS Private CA; check current regional ACM terms |
 
 The two NAT gateways, Multi-AZ RDS, and ALB are the largest always-on categories in this small demonstration design. A zero desired task count does not shut them down. Use an explicit time-box and budget alerts for any temporary environment. Do not remove TLS, private routing, backups, or reconciliation safeguards merely to lower cost.
 
@@ -21,7 +22,7 @@ The two NAT gateways, Multi-AZ RDS, and ALB are the largest always-on categories
 
 - [ ] Select region, expected run duration, and API/worker desired counts.
 - [ ] Estimate Multi-AZ RDS, storage, backup retention, and final snapshot lifetime.
-- [ ] Estimate two NAT gateways, expected outbound data, and private client connectivity.
+- [ ] Estimate two NAT gateways, expected outbound data, the private SSM host, root disk, and three interface endpoints.
 - [ ] Estimate ALB, Fargate CPU/memory, ECR storage, CloudWatch retention, and Secrets Manager including merchant-key growth and retirement.
 - [ ] Include Temporal Cloud namespace and usage under its separate account.
 - [ ] Set an account budget/alert and name the owner responsible for teardown and retained data.

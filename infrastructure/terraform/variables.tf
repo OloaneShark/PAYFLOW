@@ -27,15 +27,34 @@ variable "vpc_cidr" {
 }
 
 variable "private_client_cidr" {
-  type = string
+  type        = string
+  default     = null
+  description = "Optional existing routed private client CIDR. Leave null for SSM-only demo access."
   validation {
-    condition     = can(cidrhost(var.private_client_cidr, 0)) && var.private_client_cidr != "0.0.0.0/0" && var.private_client_cidr != "::/0"
+    condition     = var.private_client_cidr == null || (can(cidrhost(var.private_client_cidr, 0)) && var.private_client_cidr != "0.0.0.0/0" && var.private_client_cidr != "::/0")
     error_message = "Supply the specific VPN or private network CIDR allowed to reach the internal ALB."
   }
 }
 
+variable "enable_demo_access" {
+  type        = bool
+  default     = false
+  description = "Create one temporary private SSM access host for the domain-free demonstration."
+}
+
+variable "demo_access_operator_role_name" {
+  type        = string
+  default     = ""
+  description = "Existing approved IAM role allowed to open a remote-host port-forwarding session to the demo access host."
+  validation {
+    condition     = !var.enable_demo_access || var.demo_access_operator_role_name != ""
+    error_message = "Supply an approved existing operator role when enabling demo access."
+  }
+}
+
 variable "internal_alb_certificate_arn" {
-  type = string
+  type        = string
+  description = "Regional ACM ARN of the imported short-lived payflow-demo.test certificate. Import outside Terraform; never put the key in state."
   validation {
     condition     = can(regex("^arn:aws:acm:[^:]+:[0-9]{12}:certificate/", var.internal_alb_certificate_arn))
     error_message = "Supply an ACM certificate ARN for the internal HTTPS listener."

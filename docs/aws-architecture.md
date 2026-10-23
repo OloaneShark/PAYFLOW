@@ -4,7 +4,8 @@ This is a proposed deployment of a **simulated** payment system. No funds move, 
 
 ```mermaid
 flowchart LR
-  CLIENT[Approved private client network] --> ALB[Internal HTTPS ALB]
+  CLIENT[Approved SSM tunnel client] --> ACCESS[Temporary private managed access host]
+  ACCESS --> ALB[Internal HTTPS ALB]
   ALB --> API[ECS API]
   API -->|authenticated SubmitPayment| DB[(Private RDS PostgreSQL)]
   DB -->|pending dispatch| WORKER[ECS worker]
@@ -22,7 +23,7 @@ flowchart LR
 
 ## Network and trust boundaries
 
-Terraform creates one VPC in two availability zones, public NAT subnets, private application subnets, and isolated database subnets. Only NAT subnets have an Internet Gateway route. API, worker, migrator, and admin tasks have no public IP; RDS is private. Worker and admin tasks have no load balancer listener. The internal HTTPS ALB accepts port 443 only from `private_client_cidr`; a VPN, Direct Connect, or equivalent routed private client path and matching private DNS and ACM certificate must be supplied separately. The CIDR rule does not create that route or authenticate clients. The API accepts port 8080 only from the ALB. Every merchant RPC requires a bearer credential; `/readyz` and `/healthz` remain internal health probes.
+Terraform creates one VPC in two availability zones, public NAT subnets, private application subnets, and isolated database subnets. Only NAT subnets have an Internet Gateway route. API, worker, migrator, and admin tasks have no public IP; RDS is private. Worker and admin tasks have no load balancer listener. The internal HTTPS ALB accepts port 443 from an optional approved `private_client_cidr` and, for the temporary demonstration, from a private SSM managed access host. The host has no inbound rule or public IP and reaches only the ALB and dedicated SSM interface endpoints. The local client verifies an imported self-signed `payflow-demo.test` certificate through the SSM tunnel; neither a purchased domain nor a user-managed private DNS zone is required. See [domain-free demonstration](domain-free-demo.md). The API accepts port 8080 only from the ALB. Every merchant RPC requires a bearer credential; `/readyz` and `/healthz` remain internal health probes.
 
 Application tasks reach RDS on 5432 through security group rules. Private task subnets use NAT for ECR, CloudWatch, Secrets Manager, and Temporal Cloud; the database subnets have no default route. The worker uses outbound 7233 to Temporal Cloud. Task outbound 443 currently permits broad destinations through NAT, so an environment requiring stricter egress needs reviewed endpoints or a firewall. Local metrics listeners bind loopback within containers and have no ALB route.
 

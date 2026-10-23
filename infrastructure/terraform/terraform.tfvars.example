@@ -1,8 +1,12 @@
 # Copy to terraform.tfvars (ignored), then replace placeholders.
 aws_region                       = "us-east-1"
 availability_zones              = ["us-east-1a", "us-east-1b"]
-private_client_cidr             = "10.42.0.0/24"
 internal_alb_certificate_arn    = "arn:aws:acm:us-east-1:123456789012:certificate/replace-me"
+# No domain purchase or private DNS zone is required. The SSM tunnel connects
+# to the ALB DNS name, while the HTTPS client verifies payflow-demo.test.
+enable_demo_access              = true
+demo_access_operator_role_name  = "approved-payflow-demo-operators"
+# private_client_cidr           = "10.42.0.0/24" # only with an existing routed private client network
 
 # First apply: leave enable_runtime=false and desired counts at zero.
 enable_runtime = false

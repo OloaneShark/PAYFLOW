@@ -128,11 +128,75 @@ resource "aws_security_group" "database" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_private_clients" {
+  count             = var.private_client_cidr == null ? 0 : 1
   security_group_id = aws_security_group.alb.id
   cidr_ipv4         = var.private_client_cidr
   ip_protocol       = "tcp"
   from_port         = 443
   to_port           = 443
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_demo_access" {
+  count                        = var.enable_demo_access ? 1 : 0
+  security_group_id            = aws_security_group.alb.id
+  referenced_security_group_id = aws_security_group.demo_access[0].id
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+}
+
+resource "aws_security_group" "demo_access" {
+  count       = var.enable_demo_access ? 1 : 0
+  name_prefix = "${local.name}-demo-access-"
+  description = "No inbound rules; SSM outbound and private ALB HTTPS only"
+  vpc_id      = aws_vpc.main.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "demo_access_alb" {
+  count                        = var.enable_demo_access ? 1 : 0
+  security_group_id            = aws_security_group.demo_access[0].id
+  referenced_security_group_id = aws_security_group.alb.id
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+}
+
+resource "aws_security_group" "demo_ssm_endpoints" {
+  count       = var.enable_demo_access ? 1 : 0
+  name_prefix = "${local.name}-demo-ssm-"
+  description = "SSM PrivateLink endpoints for temporary access host"
+  vpc_id      = aws_vpc.main.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "demo_ssm_from_host" {
+  count                        = var.enable_demo_access ? 1 : 0
+  security_group_id            = aws_security_group.demo_ssm_endpoints[0].id
+  referenced_security_group_id = aws_security_group.demo_access[0].id
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+}
+
+resource "aws_vpc_security_group_egress_rule" "demo_access_ssm" {
+  count                        = var.enable_demo_access ? 1 : 0
+  security_group_id            = aws_security_group.demo_access[0].id
+  referenced_security_group_id = aws_security_group.demo_ssm_endpoints[0].id
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+}
+
+# No general internet egress from the access host. The two existing NAT
+# gateways remain available to the application and worker subnets.
+resource "aws_vpc_endpoint" "demo_ssm" {
+  for_each            = var.enable_demo_access ? toset(["ssm", "ssmmessages", "ec2messages"]) : toset([])
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.aws_region}.${each.key}"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = [aws_subnet.app[0].id]
+  security_group_ids  = [aws_security_group.demo_ssm_endpoints[0].id]
+  private_dns_enabled = true
+  tags                = { Name = "${local.name}-demo-${each.key}" }
 }
 
 resource "aws_vpc_security_group_egress_rule" "alb_api" {

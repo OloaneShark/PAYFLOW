@@ -12,3 +12,8 @@ coverage.out
 *.tfplan
 crash.log
 results/
+.demo-certs/
+*.key
+*.pem
+*.p12
+*.pfx
